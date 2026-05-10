@@ -120,6 +120,7 @@ async function loadSignal() {
     updateSignalCard(s);
     updateLevels(s);
     updateIndicators(s);
+    renderTradeProposals(s);
     if (s.candles?.length) {
       renderCandles(s.candles);
       addChartAnnotations(s, s.candles);
@@ -232,6 +233,174 @@ function updateIndicators(s) {
   const bollPct = Math.min(100, Math.max(0, s.bollingerPosition * 100));
   document.getElementById('boll-pos-needle').style.left = bollPct + '%';
   setText('boll-pos-val', 'Position dans les bandes : ' + bollPct.toFixed(0) + '%');
+
+  // ADX
+  const adxPct = Math.min(100, (s.adx / 60) * 100);
+  document.getElementById('adx-needle').style.left = adxPct + '%';
+  let adxLabel, adxClass;
+  if      (s.adx > 40) { adxLabel = `ADX ${s.adx.toFixed(1)} — Tendance forte`;   adxClass = 'ind-value trend-bull'; }
+  else if (s.adx > 22) { adxLabel = `ADX ${s.adx.toFixed(1)} — Tendance modérée`; adxClass = 'ind-value trend-neutral'; }
+  else                  { adxLabel = `ADX ${s.adx.toFixed(1)} — Marché en range`;  adxClass = 'ind-value trend-bear'; }
+  const adxEl = document.getElementById('adx-value');
+  adxEl.textContent = adxLabel;
+  adxEl.className   = adxClass;
+  setText('plus-di',  s.plusDI  != null ? s.plusDI.toFixed(1)  : '—');
+  setText('minus-di', s.minusDI != null ? s.minusDI.toFixed(1) : '—');
+
+  // Stochastic
+  const stochPct = Math.min(100, Math.max(0, s.stochK));
+  document.getElementById('stoch-needle').style.left = stochPct + '%';
+  setText('stoch-k', s.stochK != null ? s.stochK.toFixed(1) : '—');
+  setText('stoch-d', s.stochD != null ? s.stochD.toFixed(1) : '—');
+  let stochLabel, stochClass;
+  if      (s.stochK < 20) { stochLabel = '🟢 Survendu — rebond possible';   stochClass = 'ind-value trend-bull'; }
+  else if (s.stochK > 80) { stochLabel = '🔴 Suracheté — correction possible'; stochClass = 'ind-value trend-bear'; }
+  else if (s.stochK > s.stochD) { stochLabel = '↗ %K > %D (momentum haussier)'; stochClass = 'ind-value trend-bull'; }
+  else                    { stochLabel = '↘ %K < %D (momentum baissier)';    stochClass = 'ind-value trend-bear'; }
+  const stochEl = document.getElementById('stoch-signal');
+  stochEl.textContent = stochLabel;
+  stochEl.className   = stochClass;
+
+  // OBV
+  const obvEl    = document.getElementById('obv-direction');
+  const obvLabel = document.getElementById('obv-label');
+  if (s.obvSlope > 0) {
+    obvEl.textContent = '↑ Haussier';
+    obvEl.className   = 'ind-value trend-bull';
+    obvLabel.textContent = 'Volume confirme la hausse — acheteurs actifs';
+  } else if (s.obvSlope < 0) {
+    obvEl.textContent = '↓ Baissier';
+    obvEl.className   = 'ind-value trend-bear';
+    obvLabel.textContent = 'Volume confirme la baisse — vendeurs actifs';
+  } else {
+    obvEl.textContent = '→ Neutre';
+    obvEl.className   = 'ind-value trend-neutral';
+    obvLabel.textContent = 'Pas de pression de volume dominante';
+  }
+}
+
+// ── Trade Proposals ────────────────────────────────────────────────────────────
+function renderTradeProposals(s) {
+  const entry = s.currentPrice;
+  const atr   = s.atr;
+  const lev   = s.leverage || 10;
+
+  const p2 = v => Math.round(v * 100) / 100;
+  const pnlPct = (e, t, dir) => {
+    const move = (t - e) / e;
+    return ((dir === 'SHORT' ? -move : move) * lev * 100).toFixed(2);
+  };
+  const fmtPnl = (e, t, dir) => {
+    const v = pnlPct(e, t, dir);
+    return (v >= 0 ? '+' : '') + v + '%';
+  };
+
+  // ── Indicator synthesis ────────────────────────────────────────────────────
+  const indicators = [
+    { name: 'RSI',      bull: s.rsi < 40,       bear: s.rsi > 65,           val: s.rsi?.toFixed(1) },
+    { name: 'EMA',      bull: s.ema9 > s.ema21,  bear: s.ema9 < s.ema21,    val: s.ema9 > s.ema21 ? '9>21' : '9<21' },
+    { name: 'MACD',     bull: s.macdHistogram > 0, bear: s.macdHistogram < 0, val: s.macdHistogram >= 0 ? '+' : '−' },
+    { name: 'Bollinger',bull: s.bollingerPosition < 0.30, bear: s.bollingerPosition > 0.70, val: (s.bollingerPosition*100).toFixed(0)+'%' },
+    { name: 'Stoch',    bull: s.stochK < 20,     bear: s.stochK > 80,        val: s.stochK?.toFixed(1) },
+    { name: 'OBV',      bull: s.obvSlope > 0,    bear: s.obvSlope < 0,       val: s.obvSlope > 0 ? '↑' : '↓' },
+    { name: 'ADX',      bull: s.adx > 25 && s.plusDI > s.minusDI, bear: s.adx > 25 && s.minusDI > s.plusDI, val: s.adx?.toFixed(1) },
+  ];
+
+  let bullCount = 0, bearCount = 0;
+  const grid = document.getElementById('synthesis-grid');
+  grid.innerHTML = indicators.map(ind => {
+    let cls, arrow;
+    if      (ind.bull) { cls = 'syn-bull'; arrow = '▲'; bullCount++; }
+    else if (ind.bear) { cls = 'syn-bear'; arrow = '▼'; bearCount++; }
+    else               { cls = 'syn-neut'; arrow = '→'; }
+    return `<div class="syn-item">
+      <span class="syn-name">${ind.name}</span>
+      <span class="syn-arrow ${cls}">${arrow}</span>
+      <span class="${cls}" style="font-size:11px">${ind.val ?? '—'}</span>
+    </div>`;
+  }).join('');
+
+  const verdict = document.getElementById('synthesis-verdict');
+  const total = bullCount + bearCount;
+  if (bullCount >= 5)                   { verdict.textContent = `✅ ${bullCount}/7 indicateurs haussiers — terrain favorable au LONG`;  verdict.className = 'synthesis-verdict verdict-bull'; }
+  else if (bearCount >= 5)              { verdict.textContent = `🔻 ${bearCount}/7 indicateurs baissiers — terrain favorable au SHORT`; verdict.className = 'synthesis-verdict verdict-bear'; }
+  else if (bullCount > bearCount)       { verdict.textContent = `↗ Légère majorité haussière (${bullCount} vs ${bearCount}) — LONG avec prudence`; verdict.className = 'synthesis-verdict verdict-bull'; }
+  else if (bearCount > bullCount)       { verdict.textContent = `↘ Légère majorité baissière (${bearCount} vs ${bullCount}) — SHORT avec prudence`; verdict.className = 'synthesis-verdict verdict-bear'; }
+  else                                  { verdict.textContent = `→ Signaux mixtes (${bullCount} haussiers / ${bearCount} baissiers) — Attendre confirmation`; verdict.className = 'synthesis-verdict verdict-neut'; }
+
+  // ── LONG scenario ─────────────────────────────────────────────────────────
+  const lLevels = {
+    entry, liq: p2(entry * (1 - 1/lev)),
+    sl:  p2(entry - atr),
+    tp1: p2(entry + atr),
+    tp2: p2(entry + 2*atr),
+    tp3: p2(entry + 3*atr),
+  };
+  setText('l-entry', '$' + fmt(lLevels.entry));
+  setText('l-tp1',   '$' + fmt(lLevels.tp1));
+  setText('l-tp2',   '$' + fmt(lLevels.tp2));
+  setText('l-tp3',   '$' + fmt(lLevels.tp3));
+  setText('l-sl',    '$' + fmt(lLevels.sl));
+  setText('l-liq',   '$' + fmt(lLevels.liq));
+  setText('l-tp1-pnl', fmtPnl(entry, lLevels.tp1, 'LONG'));
+  setText('l-tp2-pnl', fmtPnl(entry, lLevels.tp2, 'LONG'));
+  setText('l-tp3-pnl', fmtPnl(entry, lLevels.tp3, 'LONG'));
+  setText('l-sl-pnl',  fmtPnl(entry, lLevels.sl,  'LONG'));
+
+  // ── SHORT scenario ────────────────────────────────────────────────────────
+  const sLevels = {
+    entry, liq: p2(entry * (1 + 1/lev)),
+    sl:  p2(entry + atr),
+    tp1: p2(entry - atr),
+    tp2: p2(entry - 2*atr),
+    tp3: p2(entry - 3*atr),
+  };
+  setText('s-entry', '$' + fmt(sLevels.entry));
+  setText('s-tp1',   '$' + fmt(sLevels.tp1));
+  setText('s-tp2',   '$' + fmt(sLevels.tp2));
+  setText('s-tp3',   '$' + fmt(sLevels.tp3));
+  setText('s-sl',    '$' + fmt(sLevels.sl));
+  setText('s-liq',   '$' + fmt(sLevels.liq));
+  setText('s-tp1-pnl', fmtPnl(entry, sLevels.tp1, 'SHORT'));
+  setText('s-tp2-pnl', fmtPnl(entry, sLevels.tp2, 'SHORT'));
+  setText('s-tp3-pnl', fmtPnl(entry, sLevels.tp3, 'SHORT'));
+  setText('s-sl-pnl',  fmtPnl(entry, sLevels.sl,  'SHORT'));
+
+  // ── Badges & highlights ───────────────────────────────────────────────────
+  const longCard  = document.getElementById('proposal-long');
+  const shortCard = document.getElementById('proposal-short');
+  const longBadge = document.getElementById('long-badge');
+  const shortBadge= document.getElementById('short-badge');
+
+  longCard.className  = 'proposal-card' + (s.direction === 'LONG'  ? ' recommended-long'  : '');
+  shortCard.className = 'proposal-card' + (s.direction === 'SHORT' ? ' recommended-short' : '');
+
+  if (s.direction === 'LONG') {
+    longBadge.textContent  = '✅ Recommandé'; longBadge.className  = 'prop-badge badge-recommended';
+    shortBadge.textContent = '⛔ Déconseillé'; shortBadge.className = 'prop-badge badge-avoid';
+  } else if (s.direction === 'SHORT') {
+    shortBadge.textContent = '✅ Recommandé'; shortBadge.className = 'prop-badge badge-recommended';
+    longBadge.textContent  = '⛔ Déconseillé'; longBadge.className = 'prop-badge badge-avoid';
+  } else {
+    longBadge.textContent  = '⏳ Attendre'; longBadge.className  = 'prop-badge badge-wait';
+    shortBadge.textContent = '⏳ Attendre'; shortBadge.className = 'prop-badge badge-wait';
+  }
+
+  // ── Reason summaries ──────────────────────────────────────────────────────
+  const longReasons  = [];
+  const shortReasons = [];
+
+  if (s.ema9 > s.ema21)         longReasons.push('EMA haussière'); else shortReasons.push('EMA baissière');
+  if (s.rsi < 40)                longReasons.push('RSI survendu');  else if (s.rsi > 65) shortReasons.push('RSI suracheté');
+  if (s.macdHistogram > 0)       longReasons.push('MACD positif');  else shortReasons.push('MACD négatif');
+  if (s.stochK < 20)             longReasons.push('Stoch survendu'); else if (s.stochK > 80) shortReasons.push('Stoch suracheté');
+  if (s.bollingerPosition < 0.3) longReasons.push('Près bande basse'); else if (s.bollingerPosition > 0.7) shortReasons.push('Près bande haute');
+  if (s.obvSlope > 0)            longReasons.push('OBV haussier'); else shortReasons.push('OBV baissier');
+  if (s.adx < 20)               { longReasons.push('⚠ ADX faible (range)'); shortReasons.push('⚠ ADX faible (range)'); }
+  else if (s.adx > 25)          { if (s.plusDI > s.minusDI) longReasons.push(`+DI>${s.minusDI?.toFixed(0)}`); else shortReasons.push(`-DI>${s.plusDI?.toFixed(0)}`); }
+
+  setText('long-reason',  longReasons.length  ? '📌 ' + longReasons.join(' · ')  : 'Peu de signaux haussiers actuellement');
+  setText('short-reason', shortReasons.length ? '📌 ' + shortReasons.join(' · ') : 'Peu de signaux baissiers actuellement');
 }
 
 // ── Chart annotations (price lines + entry marker) ────────────────────────────

@@ -189,6 +189,121 @@ public class TechnicalAnalysisService {
         return score;
     }
 
+    // ── ADX (Average Directional Index) ──────────────────────────────────────
+
+    /**
+     * Wilder-smoothed ADX(period) with +DI and -DI.
+     * Arrays must be same length, chronological order (oldest first).
+     *
+     * @return [ADX, +DI, -DI]
+     */
+    public double[] calculateADX(double[] highs, double[] lows, double[] closes, int period) {
+        int n = closes.length;
+        if (n < period + 1) return new double[]{0, 0, 0};
+
+        double[] tr   = new double[n];
+        double[] plusDM  = new double[n];
+        double[] minusDM = new double[n];
+
+        tr[0] = highs[0] - lows[0];
+        for (int i = 1; i < n; i++) {
+            double hl  = highs[i] - lows[i];
+            double hpc = Math.abs(highs[i] - closes[i - 1]);
+            double lpc = Math.abs(lows[i]  - closes[i - 1]);
+            tr[i] = Math.max(hl, Math.max(hpc, lpc));
+
+            double upMove   = highs[i]  - highs[i - 1];
+            double downMove = lows[i - 1] - lows[i];
+            plusDM[i]  = (upMove   > downMove && upMove   > 0) ? upMove   : 0;
+            minusDM[i] = (downMove > upMove   && downMove > 0) ? downMove : 0;
+        }
+
+        // Wilder initial sums
+        double sTR = 0, sPDM = 0, sMDM = 0;
+        for (int i = 1; i <= period; i++) { sTR += tr[i]; sPDM += plusDM[i]; sMDM += minusDM[i]; }
+
+        double[] dx = new double[n];
+        for (int i = period + 1; i < n; i++) {
+            sTR  = sTR  - sTR  / period + tr[i];
+            sPDM = sPDM - sPDM / period + plusDM[i];
+            sMDM = sMDM - sMDM / period + minusDM[i];
+
+            double pdi = sTR > 0 ? 100.0 * sPDM / sTR : 0;
+            double mdi = sTR > 0 ? 100.0 * sMDM / sTR : 0;
+            double sum = pdi + mdi;
+            dx[i] = sum > 0 ? 100.0 * Math.abs(pdi - mdi) / sum : 0;
+        }
+
+        // ADX = Wilder smooth of DX over last `period` DX values
+        double adx = 0;
+        int start = period + 1;
+        for (int i = start; i < start + period && i < n; i++) adx += dx[i];
+        adx /= period;
+        for (int i = start + period; i < n; i++) adx = (adx * (period - 1) + dx[i]) / period;
+
+        // Final +DI / -DI at last candle
+        double pdi = sTR > 0 ? 100.0 * sPDM / sTR : 0;
+        double mdi = sTR > 0 ? 100.0 * sMDM / sTR : 0;
+
+        return new double[]{adx, pdi, mdi};
+    }
+
+    // ── Stochastic ────────────────────────────────────────────────────────────
+
+    /**
+     * Stochastic oscillator %K(kPeriod) smoothed to %D(dPeriod).
+     * Arrays must be same length, chronological order (oldest first).
+     *
+     * @return [%K, %D]
+     */
+    public double[] calculateStochastic(double[] highs, double[] lows, double[] closes,
+                                        int kPeriod, int dPeriod) {
+        int n = closes.length;
+        if (n < kPeriod) return new double[]{50, 50};
+
+        // Raw %K for each candle where we have enough history
+        java.util.List<Double> kValues = new java.util.ArrayList<>();
+        for (int i = kPeriod - 1; i < n; i++) {
+            double lo = lows[i], hi = highs[i];
+            for (int j = i - kPeriod + 1; j < i; j++) {
+                lo = Math.min(lo, lows[j]);
+                hi = Math.max(hi, highs[j]);
+            }
+            double range = hi - lo;
+            kValues.add(range > 0 ? 100.0 * (closes[i] - lo) / range : 50.0);
+        }
+
+        double lastK = kValues.get(kValues.size() - 1);
+
+        // %D = SMA(dPeriod) of the last dPeriod %K values
+        int from = Math.max(0, kValues.size() - dPeriod);
+        double d = kValues.subList(from, kValues.size())
+                          .stream().mapToDouble(Double::doubleValue).average().orElse(50);
+
+        return new double[]{lastK, d};
+    }
+
+    // ── OBV (On-Balance Volume) ───────────────────────────────────────────────
+
+    /**
+     * Returns the OBV trend slope: positive = OBV rising (buying pressure),
+     * negative = OBV falling (selling pressure).
+     * Computed as OBV[last] − OBV[last − lookback].
+     */
+    public double calculateOBVSlope(List<Double> closes, List<Double> volumes, int lookback) {
+        int n = closes.size();
+        if (n < 2) return 0;
+
+        double[] obv = new double[n];
+        for (int i = 1; i < n; i++) {
+            double delta = closes.get(i) - closes.get(i - 1);
+            obv[i] = obv[i - 1] + (delta > 0 ? volumes.get(i) : delta < 0 ? -volumes.get(i) : 0);
+        }
+
+        int lb = Math.min(lookback, n - 1);
+        return obv[n - 1] - obv[n - 1 - lb];
+    }
+
     // ── ATR (Average True Range) ──────────────────────────────────────────────
 
     /**

@@ -73,12 +73,13 @@ public class CryptoAnalysisService {
 
             List<CandleDTO> candles = raw.stream().map(this::parseKline).collect(Collectors.toList());
 
-            // Arrays for ATR computation
+            // Arrays for indicator computation
             int n = candles.size();
-            double[] highs  = new double[n];
-            double[] lows   = new double[n];
-            double[] closes = new double[n];
-            List<Double> closeList = new ArrayList<>(n);
+            double[] highs   = new double[n];
+            double[] lows    = new double[n];
+            double[] closes  = new double[n];
+            List<Double> closeList  = new ArrayList<>(n);
+            List<Double> volumeList = new ArrayList<>(n);
 
             for (int i = 0; i < n; i++) {
                 CandleDTO c = candles.get(i);
@@ -86,61 +87,89 @@ public class CryptoAnalysisService {
                 lows[i]   = c.low;
                 closes[i] = c.close;
                 closeList.add(c.close);
+                volumeList.add(c.volume);
             }
 
             double currentPrice = closes[n - 1];
 
             // ── Indicators ────────────────────────────────────────────────────
-            double rsi  = ta.calculateRSI(closeList, 14);
-            double ema9 = ta.calculateEMA(closeList, 9);
-            double ema21= ta.calculateEMA(closeList, 21);
+            double   rsi      = ta.calculateRSI(closeList, 14);
+            double   ema9     = ta.calculateEMA(closeList, 9);
+            double   ema21    = ta.calculateEMA(closeList, 21);
             double[] macd     = ta.calculateMACD(closeList);
             double[] boll     = ta.calculateBollingerBands(closeList, 20);
             double   atr      = ta.computeATR(highs, lows, closes, 14);
+            double[] adxArr   = ta.calculateADX(highs, lows, closes, 14);
+            double[] stoch    = ta.calculateStochastic(highs, lows, closes, 14, 3);
+            double   obvSlope = ta.calculateOBVSlope(closeList, volumeList, 14);
 
             double bandWidth  = boll[0] - boll[2];
             double bollPos    = bandWidth > 0 ? (currentPrice - boll[2]) / bandWidth : 0.5;
 
             // ── Directional score (–100 → +100) ──────────────────────────────
             int raw_score = 0;
+            boolean bullTrend = ema9 > ema21;  // contexte de tendance
+            boolean bearTrend = ema9 < ema21;
 
-            // RSI (±30) — 45-55 est neutre, pas pénalisé
+            // RSI (±30) — en tendance, le surachat/survente est normal et moins pénalisé
             if      (rsi < 30) raw_score += 30;
             else if (rsi < 40) raw_score += 20;
-            else if (rsi < 55) raw_score += 0;   // neutre
-            else if (rsi < 65) raw_score -= 15;
-            else if (rsi < 75) raw_score -= 25;
-            else               raw_score -= 30;
+            else if (rsi < 65) raw_score += 0;   // neutre
+            else if (rsi < 75) raw_score -= (bullTrend ? 5  : 20); // uptrend: RSI 66-74 = momentum normal
+            else               raw_score -= (bullTrend ? 15 : 30); // uptrend: RSI >75 = surachat modéré seulement
 
-            // EMA trend (±30)
+            // EMA trend (±30) — indicateur de tendance structurelle
             double emaDiff = (ema9 - ema21) / ema21;
             if      (emaDiff >  0.005) raw_score += 30;
             else if (emaDiff >  0.001) raw_score += 18;
-            else if (emaDiff >  0)     raw_score += 8;
-            else if (emaDiff > -0.001) raw_score -= 8;
+            else if (emaDiff >  0)     raw_score += 10;
+            else if (emaDiff > -0.001) raw_score -= 10;
             else if (emaDiff > -0.005) raw_score -= 18;
             else                       raw_score -= 30;
 
-            // MACD histogram (±25)
+            // MACD histogram (±20) — momentum, pondéré selon amplitude
             double hist = macd[2];
-            if      (hist > 0) raw_score += 25;
-            else if (hist < 0) raw_score -= 25;
+            double histAbs = Math.abs(hist);
+            int macdPts = histAbs > 100 ? 20 : histAbs > 30 ? 15 : histAbs > 5 ? 10 : 5;
+            if      (hist > 0) raw_score += macdPts;
+            else if (hist < 0) raw_score -= macdPts;
 
-            // Bollinger position (±15) — pénalise seulement aux extrêmes
+            // Bollinger position — coller la bande haute en uptrend = normal (force, pas surachat)
             if      (bollPos < 0.15)  raw_score += 15;
             else if (bollPos < 0.30)  raw_score += 7;
-            else if (bollPos > 0.85)  raw_score -= 15;
-            else if (bollPos > 0.70)  raw_score -= 7;
+            else if (bollPos > 0.85)  raw_score -= (bullTrend ? 3  : 15); // uptrend: légèrement pénalisé
+            else if (bollPos > 0.70)  raw_score -= (bullTrend ? 0  : 7);  // uptrend: neutre
+
+            // Stochastic %K — en tendance haussière, >80 = momentum fort (pas signal de vente)
+            double stochK = stoch[0];
+            if      (stochK < 20) raw_score += 15;
+            else if (stochK < 35) raw_score += 7;
+            else if (stochK > 80) raw_score -= (bullTrend ? 0  : 15); // uptrend: ignoré
+            else if (stochK > 65) raw_score -= (bullTrend ? 0  : 7);  // uptrend: ignoré
+
+            // OBV slope (±10) — volume confirme-t-il la direction ?
+            if      (obvSlope > 0) raw_score += 10;
+            else if (obvSlope < 0) raw_score -= 10;
 
             // Normalise to 0–100
             int confidence = (raw_score + 100) / 2;
             confidence = Math.max(0, Math.min(100, confidence));
+
+            // ADX — filtre de tendance : marché en range → atténuer les signaux
+            double adx = adxArr[0];
+            if      (adx < 15) confidence = (int)(confidence * 0.65 + 50 * 0.35);
+            else if (adx < 22) confidence = (int)(confidence * 0.85 + 50 * 0.15);
 
             // LONG ≥ 60 · SHORT ≤ 40 · WAIT entre les deux
             String direction;
             if      (confidence >= 60) direction = "LONG";
             else if (confidence <= 40) direction = "SHORT";
             else                       direction = "WAIT";
+
+            // Filtre de tendance EMA : ne jamais shorter une tendance haussière structurelle
+            // ni longer une tendance baissière structurelle
+            if ("SHORT".equals(direction) && ema9 > ema21) direction = "WAIT";
+            if ("LONG".equals(direction)  && ema9 < ema21) direction = "WAIT";
 
             // ── Entry / TP / SL (ATR-based) ───────────────────────────────────
             double entry = currentPrice;
@@ -188,6 +217,15 @@ public class CryptoAnalysisService {
             if (bollPos < 0.25)  reasons.add("Prix près de la bande basse de Bollinger");
             else if (bollPos > 0.75) reasons.add("Prix près de la bande haute de Bollinger");
 
+            if      (adx > 40)   reasons.add("ADX=" + r1(adx) + " (tendance forte)");
+            else if (adx > 22)   reasons.add("ADX=" + r1(adx) + " (tendance modérée)");
+            else                 reasons.add("ADX=" + r1(adx) + " (marché en range)");
+
+            if      (stochK < 20) reasons.add("Stoch survendu (" + r1(stochK) + ")");
+            else if (stochK > 80) reasons.add("Stoch suracheté (" + r1(stochK) + ")");
+
+            reasons.add(obvSlope > 0 ? "OBV haussier (volume confirme)" : "OBV baissier (pression vendeuse)");
+
             // ── Populate DTO ──────────────────────────────────────────────────
             s.direction        = direction;
             s.confidence       = confidence;
@@ -213,11 +251,17 @@ public class CryptoAnalysisService {
             s.bollingerLower   = r2(boll[2]);
             s.bollingerPosition= r2(bollPos);
             s.atr              = r2(atr);
+            s.adx              = r1(adx);
+            s.plusDI           = r1(adxArr[1]);
+            s.minusDI          = r1(adxArr[2]);
+            s.stochK           = r1(stoch[0]);
+            s.stochD           = r1(stoch[1]);
+            s.obvSlope         = obvSlope;
             s.reasoning        = String.join(" · ", reasons);
             s.candles          = candles.subList(Math.max(0, n - 100), n);
 
-            LOG.infof("[BTC] %s  conf=%d  RSI=%.1f  EMA9/21=%.0f/%.0f  MACD=%.2f  ATR=%.0f",
-                    direction, confidence, rsi, ema9, ema21, hist, atr);
+            LOG.infof("[BTC] %s  conf=%d  RSI=%.1f  EMA9/21=%.0f/%.0f  MACD=%.2f  ADX=%.1f  Stoch=%.1f",
+                    direction, confidence, rsi, ema9, ema21, hist, adx, stochK);
 
         } catch (Exception e) {
             LOG.error("BTC signal computation failed", e);

@@ -31,7 +31,7 @@ public class FundamentalResource {
     }
 
     @GET
-    @Path("/stocks/{symbol}/fundamental")
+    @Path("/fundamentals/{symbol}")
     @Operation(summary = "Get (or fetch) fundamental valuation analysis for a stock")
     public Response getFundamental(@PathParam("symbol") String symbol) {
         String sym = symbol.toUpperCase();
@@ -50,7 +50,7 @@ public class FundamentalResource {
     }
 
     @GET
-    @Path("/stocks/{symbol}/fundamental/cached")
+    @Path("/fundamentals/{symbol}/cached")
     @Transactional
     @Operation(summary = "Get the last cached fundamental data without triggering a new fetch")
     public Response getCachedFundamental(@PathParam("symbol") String symbol) {

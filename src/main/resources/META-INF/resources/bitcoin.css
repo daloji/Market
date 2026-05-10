@@ -217,6 +217,121 @@ main {
   gap: 16px;
 }
 
+/* ── Trade Proposals section ─────────────────────────────────────────────────── */
+.trade-proposals-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Indicator synthesis bar */
+.ind-synthesis {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+.synthesis-title {
+  font-size: 12px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .8px;
+  font-weight: 600; margin-bottom: 14px;
+}
+.synthesis-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.syn-item {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.syn-name { color: var(--muted); }
+.syn-arrow { font-weight: 700; font-size: 14px; }
+.syn-bull { color: var(--buy); }
+.syn-bear { color: var(--sell); }
+.syn-neut { color: var(--hold); }
+.synthesis-verdict {
+  font-size: 13px; font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 8px;
+  display: inline-block;
+}
+.verdict-bull  { background: #3fb95018; color: var(--buy);  border: 1px solid var(--buy); }
+.verdict-bear  { background: #f8514918; color: var(--sell); border: 1px solid var(--sell); }
+.verdict-neut  { background: #d2992218; color: var(--hold); border: 1px solid var(--hold); }
+
+/* Proposals grid */
+.proposals-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 700px) { .proposals-grid { grid-template-columns: 1fr; } }
+
+.proposal-card {
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  transition: border-color .3s, box-shadow .3s;
+  opacity: .7;
+}
+.proposal-card.recommended-long  {
+  border-color: var(--buy);
+  box-shadow: var(--long-glow);
+  opacity: 1;
+}
+.proposal-card.recommended-short {
+  border-color: var(--sell);
+  box-shadow: var(--short-glow);
+  opacity: 1;
+}
+.proposal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+}
+.prop-dir {
+  font-size: 20px; font-weight: 800; letter-spacing: 1px;
+}
+.long-header  .prop-dir { color: var(--buy); }
+.short-header .prop-dir { color: var(--sell); }
+
+.prop-badge {
+  font-size: 11px; font-weight: 700;
+  padding: 3px 10px; border-radius: 12px;
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.badge-recommended { background: var(--buy);  color: #000; }
+.badge-wait        { background: var(--hold); color: #000; }
+.badge-avoid       { background: #333; color: var(--muted); }
+
+.prop-reason {
+  font-size: 11px; color: var(--muted);
+  margin-bottom: 14px; line-height: 1.5;
+  min-height: 32px;
+}
+
+.prop-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+.prop-table td {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.prop-table td:first-child { color: var(--muted); white-space: nowrap; }
+.prop-table td:nth-child(2) { font-weight: 600; text-align: right; }
+.prop-table td:nth-child(3) { font-weight: 700; text-align: right; }
+.prop-table .rr { font-size: 11px; text-align: right; }
+.prop-tp   td:first-child { color: var(--buy); }
+.prop-sl   td:first-child { color: var(--sell); }
+.prop-liq  td:first-child { color: #7d3f3f; }
+.prop-entry td { border-bottom: 2px solid var(--border); }
+
 .ind-card {
   background: var(--surface);
   border: 1px solid var(--border);

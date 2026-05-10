@@ -39,6 +39,15 @@ public class StockRecommendation extends PanacheEntity {
     /** 0 = at lower band, 0.5 = middle, 1 = at upper band. */
     public Double bollingerPosition;
 
+    // ADX (14)
+    public Double adx;
+    public Double plusDI;
+    public Double minusDI;
+
+    // Stochastic (14, 3)
+    public Double stochK;
+    public Double stochD;
+
     @Column(length = 1000)
     public String reasons;
 

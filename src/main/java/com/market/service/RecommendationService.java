@@ -44,6 +44,17 @@ public class RecommendationService {
         List<Double> closes  = quotes.stream().map(q -> q.close).collect(Collectors.toList());
         List<Long>   volumes = quotes.stream()
                 .map(q -> q.volume != null ? q.volume : 0L).collect(Collectors.toList());
+        List<Double> volumesD = volumes.stream().map(Long::doubleValue).collect(Collectors.toList());
+
+        int qn = quotes.size();
+        double[] highs  = new double[qn];
+        double[] lows   = new double[qn];
+        double[] closesArr = new double[qn];
+        for (int i = 0; i < qn; i++) {
+            highs[i]     = quotes.get(i).high  != null ? quotes.get(i).high  : quotes.get(i).close;
+            lows[i]      = quotes.get(i).low   != null ? quotes.get(i).low   : quotes.get(i).close;
+            closesArr[i] = quotes.get(i).close;
+        }
 
         double currentPrice  = closes.get(closes.size() - 1);
         long   currentVolume = volumes.get(volumes.size() - 1);
@@ -55,9 +66,26 @@ public class RecommendationService {
 
         double[] macd      = analysis.calculateMACD(closes);
         double[] bollinger = analysis.calculateBollingerBands(closes, 20);
+        double[] adxArr    = analysis.calculateADX(highs, lows, closesArr, 14);
+        double[] stoch     = analysis.calculateStochastic(highs, lows, closesArr, 14, 3);
 
-        int score = analysis.calculateScore(rsi, currentPrice, sma20, sma50,
+        int baseScore = analysis.calculateScore(rsi, currentPrice, sma20, sma50,
                 currentVolume, avgVolume);
+
+        // Stochastic adjustment (±10 pts)
+        double stochK = stoch[0];
+        int stochBonus = 0;
+        if      (stochK < 20) stochBonus = +10;
+        else if (stochK < 35) stochBonus = +5;
+        else if (stochK > 80) stochBonus = -10;
+        else if (stochK > 65) stochBonus = -5;
+
+        // ADX: pull score towards neutral when market is ranging
+        int score = baseScore + stochBonus;
+        double adx = adxArr[0];
+        if      (adx < 15) score = (int)(score * 0.65 + 50 * 0.35);
+        else if (adx < 22) score = (int)(score * 0.85 + 50 * 0.15);
+        score = Math.max(0, Math.min(100, score));
 
         RecommendationSignal signal;
         if      (score >= 65) signal = RecommendationSignal.BUY;
@@ -92,8 +120,15 @@ public class RecommendationService {
                 ? round2((currentPrice - bollinger[2]) / bandWidth)
                 : 0.5;
 
+        // ADX + Stochastic
+        rec.adx    = round2(adxArr[0]);
+        rec.plusDI = round2(adxArr[1]);
+        rec.minusDI= round2(adxArr[2]);
+        rec.stochK = round2(stoch[0]);
+        rec.stochD = round2(stoch[1]);
+
         rec.reasons = buildReasons(rsi, currentPrice, sma20, sma50,
-                currentVolume, avgVolume, macd, bollinger);
+                currentVolume, avgVolume, macd, bollinger, adxArr, stoch);
         rec.persist();
 
         LOG.infof("[%s] %s  score=%d  RSI=%.1f  MACD=%.4f  price=%.2f",
@@ -112,7 +147,8 @@ public class RecommendationService {
 
     private String buildReasons(double rsi, double price, double sma20, double sma50,
                                 long volume, double avgVolume,
-                                double[] macd, double[] bollinger) {
+                                double[] macd, double[] bollinger,
+                                double[] adxArr, double[] stoch) {
         List<String> parts = new ArrayList<>();
 
         // RSI
@@ -142,6 +178,17 @@ public class RecommendationService {
         if (avgVolume > 0 && (volume / avgVolume) >= 1.5) {
             parts.add(String.format("Volume élevé (%.1fx moy)", volume / avgVolume));
         }
+
+        // ADX
+        double adx = adxArr[0];
+        if      (adx > 40) parts.add(String.format("ADX=%.1f (tendance forte)", adx));
+        else if (adx > 22) parts.add(String.format("ADX=%.1f (tendance modérée)", adx));
+        else               parts.add(String.format("ADX=%.1f (marché en range)", adx));
+
+        // Stochastic
+        double sk = stoch[0];
+        if      (sk < 20) parts.add(String.format("Stoch survendu (%%K=%.1f)", sk));
+        else if (sk > 80) parts.add(String.format("Stoch suracheté (%%K=%.1f)", sk));
 
         return String.join("; ", parts);
     }

@@ -458,7 +458,7 @@ async function openFundamental(symbol) {
   modal.classList.add('open');
 
   try {
-    const res = await fetch(`/api/stocks/${symbol}/fundamental`);
+    const res = await fetch(`/api/fundamentals/${symbol}`);
     if (res.status === 503) {
       body.innerHTML = `<div class="fund-error">🔑 Clé Alpha Vantage non configurée.<br>
         Ajoutez <code>market.datasource.alphavantage.api-key=VOTRE_CLE</code> dans <code>application.properties</code>.<br>

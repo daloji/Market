@@ -47,6 +47,18 @@ public class BitcoinSignal {
     public double bollingerPosition; // 0 = at lower band, 1 = at upper band
     public double atr;               // Average True Range (1h)
 
+    // ADX (14)
+    public double adx;
+    public double plusDI;
+    public double minusDI;
+
+    // Stochastic (14, 3)
+    public double stochK;
+    public double stochD;
+
+    // OBV slope (positive = rising, negative = falling)
+    public double obvSlope;
+
     // ── Chart data ───────────────────────────────────────────────────────────
     /** Last 100 1h candles for candlestick chart */
     public List<CandleDTO> candles;

@@ -98,6 +98,60 @@
 
   </section>
 
+  <!-- ── PROPOSITIONS DE TRADE ─────────────────────────────────────────────── -->
+  <section class="trade-proposals-section">
+
+    <!-- Synthèse indicateurs -->
+    <div class="ind-synthesis" id="ind-synthesis">
+      <div class="synthesis-title">📊 Synthèse des indicateurs</div>
+      <div class="synthesis-grid" id="synthesis-grid"><!-- rempli par JS --></div>
+      <div class="synthesis-verdict" id="synthesis-verdict">—</div>
+    </div>
+
+    <!-- Deux scénarios côte à côte -->
+    <div class="proposals-grid">
+
+      <!-- LONG -->
+      <div class="proposal-card" id="proposal-long">
+        <div class="proposal-header long-header">
+          <span class="prop-dir">▲ LONG</span>
+          <span class="prop-badge" id="long-badge"></span>
+        </div>
+        <div class="prop-reason" id="long-reason">—</div>
+        <table class="prop-table">
+          <tbody>
+            <tr class="prop-tp"><td>🎯 TP3</td><td id="l-tp3">—</td><td id="l-tp3-pnl" class="green">—</td><td class="rr muted">R/R 1:3</td></tr>
+            <tr class="prop-tp"><td>🎯 TP2</td><td id="l-tp2">—</td><td id="l-tp2-pnl" class="green">—</td><td class="rr muted">R/R 1:2</td></tr>
+            <tr class="prop-tp"><td>🎯 TP1</td><td id="l-tp1">—</td><td id="l-tp1-pnl" class="green">—</td><td class="rr muted">R/R 1:1</td></tr>
+            <tr class="prop-entry"><td>📌 Entrée</td><td id="l-entry">—</td><td class="muted">—</td><td></td></tr>
+            <tr class="prop-sl"><td>🛑 Stop Loss</td><td id="l-sl">—</td><td id="l-sl-pnl" class="red">—</td><td></td></tr>
+            <tr class="prop-liq"><td>💀 Liquidation</td><td id="l-liq">—</td><td class="red">≈ -100%</td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- SHORT -->
+      <div class="proposal-card" id="proposal-short">
+        <div class="proposal-header short-header">
+          <span class="prop-dir">▼ SHORT</span>
+          <span class="prop-badge" id="short-badge"></span>
+        </div>
+        <div class="prop-reason" id="short-reason">—</div>
+        <table class="prop-table">
+          <tbody>
+            <tr class="prop-tp"><td>🎯 TP3</td><td id="s-tp3">—</td><td id="s-tp3-pnl" class="green">—</td><td class="rr muted">R/R 1:3</td></tr>
+            <tr class="prop-tp"><td>🎯 TP2</td><td id="s-tp2">—</td><td id="s-tp2-pnl" class="green">—</td><td class="rr muted">R/R 1:2</td></tr>
+            <tr class="prop-tp"><td>🎯 TP1</td><td id="s-tp1">—</td><td id="s-tp1-pnl" class="green">—</td><td class="rr muted">R/R 1:1</td></tr>
+            <tr class="prop-entry"><td>📌 Entrée</td><td id="s-entry">—</td><td class="muted">—</td><td></td></tr>
+            <tr class="prop-sl"><td>🛑 Stop Loss</td><td id="s-sl">—</td><td id="s-sl-pnl" class="red">—</td><td></td></tr>
+            <tr class="prop-liq"><td>💀 Liquidation</td><td id="s-liq">—</td><td class="red">≈ -100%</td><td></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div><!-- /proposals-grid -->
+  </section>
+
   <!-- Candlestick chart -->
   <section class="chart-section">
     <div class="chart-header">
@@ -162,6 +216,53 @@
         <div class="boll-pos-needle" id="boll-pos-needle"></div>
       </div>
       <div class="boll-pos-val" id="boll-pos-val">Position : —%</div>
+    </div>
+
+    <!-- ADX -->
+    <div class="ind-card">
+      <div class="ind-title">ADX (14) — Force de tendance</div>
+      <div class="rsi-bar-bg">
+        <div class="rsi-needle" id="adx-needle"></div>
+      </div>
+      <div class="rsi-zones">
+        <span class="muted">Range &lt;20</span>
+        <span class="hold">Modéré</span>
+        <span class="green">Fort &gt;40</span>
+      </div>
+      <div class="ind-value" id="adx-value">—</div>
+      <div class="ema-row" style="margin-top:6px">
+        <span class="ema-lbl green">+DI</span><span class="ema-val green" id="plus-di">—</span>
+      </div>
+      <div class="ema-row">
+        <span class="ema-lbl red">−DI</span><span class="ema-val red" id="minus-di">—</span>
+      </div>
+    </div>
+
+    <!-- Stochastic -->
+    <div class="ind-card">
+      <div class="ind-title">Stochastique (14, 3)</div>
+      <div class="rsi-bar-bg">
+        <div class="rsi-needle" id="stoch-needle"></div>
+      </div>
+      <div class="rsi-zones">
+        <span class="green">Survente &lt;20</span>
+        <span class="hold">Neutre</span>
+        <span class="red">Surachat &gt;80</span>
+      </div>
+      <div class="ema-row" style="margin-top:6px">
+        <span class="ema-lbl">%K</span><span class="ema-val" id="stoch-k">—</span>
+      </div>
+      <div class="ema-row">
+        <span class="ema-lbl">%D</span><span class="ema-val" id="stoch-d">—</span>
+      </div>
+      <div class="ind-value" id="stoch-signal">—</div>
+    </div>
+
+    <!-- OBV -->
+    <div class="ind-card">
+      <div class="ind-title">OBV — Pression volume</div>
+      <div class="ind-value" id="obv-direction" style="font-size:1.5rem;margin:12px 0">—</div>
+      <div id="obv-label" style="font-size:12px;color:var(--muted);text-align:center;margin-top:4px">—</div>
     </div>
 
   </section>
