@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Market Analyzer</title>
+  <link rel="stylesheet" href="style.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+
+<!-- ═══════════════════════════ HEADER ═══════════════════════════ -->
+<header>
+  <div class="header-left">
+    <span class="logo">📈</span>
+    <div>
+      <h1>Market Analyzer</h1>
+      <span class="subtitle">Analyse technique toutes les 5 min</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <a href="/bitcoin.html" class="btn btn-ghost" style="text-decoration:none">₿ Bitcoin Futures</a>
+    <div class="refresh-info">
+      <span id="last-update">—</span>
+      <span class="countdown">Prochain : <strong id="countdown">5:00</strong></span>
+    </div>
+    <button class="btn btn-ghost" onclick="refresh()">🔄 Actualiser</button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════ TOOLBAR ══════════════════════════ -->
+<div class="toolbar">
+  <div class="filters">
+    <button class="filter-btn active" data-filter="ALL">Tous</button>
+    <button class="filter-btn buy"    data-filter="BUY">🟢 BUY</button>
+    <button class="filter-btn hold"   data-filter="HOLD">🟡 HOLD</button>
+    <button class="filter-btn sell"   data-filter="SELL">🔴 SELL</button>
+    <button class="filter-btn cac40"  data-filter="CAC40">🇫🇷 CAC 40</button>
+  </div>
+  <div class="add-stock">
+    <input id="inp-symbol" type="text" placeholder="Symbole  ex. ASML.AS" maxlength="12"/>
+    <input id="inp-name"   type="text" placeholder="Nom (optionnel)" maxlength="60"/>
+    <button class="btn btn-primary" onclick="addStock()">+ Ajouter</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ VALUATION FILTER BAR ═════════════════════ -->
+<div class="fund-filter-bar">
+  <span class="fund-filter-label">📊 Valorisation :</span>
+  <button class="fund-filter-btn active" data-fund="ALL">Toutes</button>
+  <button class="fund-filter-btn undervalued" data-fund="UNDERVALUED">🟢 Sous-évalué <span id="cnt-under" class="filter-count">0</span></button>
+  <button class="fund-filter-btn fairly"      data-fund="FAIRLY_VALUED">🟡 Juste valeur <span id="cnt-fairly" class="filter-count">0</span></button>
+  <button class="fund-filter-btn overvalued"  data-fund="OVERVALUED">🔴 Sur-évalué <span id="cnt-over" class="filter-count">0</span></button>
+</div>
+
+<!-- ═══════════════════════════ CAC 40 BANNER ════════════════════ -->
+<div id="cac40-banner" style="display:none">
+  <div class="cac40-banner">
+    <!-- Index card -->
+    <div class="index-card">
+      <div class="index-label">🇫🇷 CAC 40</div>
+      <div class="index-price" id="idx-price">…</div>
+      <div class="index-change" id="idx-change">…</div>
+    </div>
+    <!-- Signal distribution -->
+    <div class="cac40-stats">
+      <div class="stat-title">Distribution des signaux</div>
+      <div class="dist-bars">
+        <div class="dist-row">
+          <span class="dist-lbl buy">BUY  <strong id="cnt-buy">0</strong></span>
+          <div class="dist-bg"><div class="dist-fill buy"  id="bar-buy"></div></div>
+        </div>
+        <div class="dist-row">
+          <span class="dist-lbl hold">HOLD <strong id="cnt-hold">0</strong></span>
+          <div class="dist-bg"><div class="dist-fill hold" id="bar-hold"></div></div>
+        </div>
+        <div class="dist-row">
+          <span class="dist-lbl sell">SELL <strong id="cnt-sell">0</strong></span>
+          <div class="dist-bg"><div class="dist-fill sell" id="bar-sell"></div></div>
+        </div>
+      </div>
+    </div>
+    <!-- Avg score -->
+    <div class="index-card">
+      <div class="index-label">Score moyen</div>
+      <div class="index-price" id="avg-score">—</div>
+      <div class="index-change muted" id="avg-label">des 34 valeurs</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ GRID ═════════════════════════════ -->
+<main>
+  <div id="loading" class="loading-msg">Chargement des données…</div>
+  <div id="empty"   class="empty-msg"   style="display:none">Aucune action ne correspond au filtre.</div>
+  <div id="grid"    class="grid"></div>
+</main>
+
+<!-- ═══════════════════════════ MODAL ════════════════════════════ -->
+<div id="modal" class="modal-overlay" onclick="closeModal(event)">
+  <div class="modal-card">
+    <button class="modal-close" onclick="closeChart()">✕</button>
+    <div class="modal-header">
+      <div>
+        <h2 id="modal-symbol">—</h2>
+        <p  id="modal-name" class="muted"></p>
+      </div>
+      <div id="modal-badge" class="signal-badge"></div>
+    </div>
+    <canvas id="price-chart"></canvas>
+    <div class="modal-metrics" id="modal-metrics"></div>
+  </div>
+</div>
+<!-- ═══════════════════════════ FUNDAMENTAL MODAL ════════════════════════ -->
+<div id="fundamental-modal" class="modal-overlay" onclick="if(event.target.id==='fundamental-modal') closeFundamental()">
+  <div class="modal-card fundamental-modal-card">
+    <button class="modal-close" onclick="closeFundamental()">✕</button>
+    <div class="modal-header">
+      <h2 id="fundamental-title">—</h2>
+      <div class="muted" style="font-size:.85rem">Analyse fondamentale</div>
+    </div>
+    <div id="fundamental-body"></div>
+  </div>
+</div>
+
+</body>
+</html>

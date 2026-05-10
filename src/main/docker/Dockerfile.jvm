@@ -1,0 +1,36 @@
+# ─── Stage 1 : Build ──────────────────────────────────────────────────────────
+FROM eclipse-temurin:21-jdk-alpine AS build
+
+WORKDIR /build
+
+# Cache Maven dependencies first
+COPY pom.xml .
+RUN apk add --no-cache maven && \
+    mvn dependency:go-offline -q
+
+# Build the application (skip tests — run them separately)
+COPY src ./src
+RUN mvn package -DskipTests -q
+
+# ─── Stage 2 : Runtime ────────────────────────────────────────────────────────
+FROM eclipse-temurin:21-jre-alpine
+
+WORKDIR /app
+
+# Non-root user for security
+RUN addgroup -S market && adduser -S market -G market
+
+# Copy the Quarkus fast-jar
+COPY --from=build /build/target/quarkus-app/lib/           ./lib/
+COPY --from=build /build/target/quarkus-app/*.jar          ./
+COPY --from=build /build/target/quarkus-app/app/           ./app/
+COPY --from=build /build/target/quarkus-app/quarkus/       ./quarkus/
+
+RUN chown -R market:market /app
+USER market
+
+EXPOSE 8080
+
+ENV JAVA_OPTS="-Dquarkus.http.host=0.0.0.0 -Djava.util.logging.manager=org.jboss.logmanager.LogManager"
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar quarkus-run.jar"]

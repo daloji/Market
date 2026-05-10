@@ -1,0 +1,480 @@
+:root {
+  --bg:        #0d1117;
+  --surface:   #161b22;
+  --border:    #30363d;
+  --text:      #c9d1d9;
+  --muted:     #8b949e;
+  --buy:       #3fb950;
+  --buy-bg:    #0d2818;
+  --sell:      #f85149;
+  --sell-bg:   #2a0e0e;
+  --hold:      #d29922;
+  --hold-bg:   #2a1e0e;
+  --blue:      #58a6ff;
+  --radius:    10px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* ── Header ─────────────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.header-left { display: flex; align-items: center; gap: 12px; }
+.logo { font-size: 28px; }
+h1   { font-size: 20px; font-weight: 700; }
+.subtitle { font-size: 12px; color: var(--muted); }
+
+.header-right { display: flex; align-items: center; gap: 16px; }
+.refresh-info { text-align: right; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.countdown strong { color: var(--blue); }
+
+/* ── Buttons ─────────────────────────────────────────────────── */
+.btn {
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: opacity .15s;
+}
+.btn:hover { opacity: .8; }
+.btn-ghost   { background: transparent; color: var(--text); }
+.btn-primary { background: var(--blue); border-color: var(--blue); color: #0d1117; }
+
+/* ── Toolbar ─────────────────────────────────────────────────── */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.filters { display: flex; gap: 8px; }
+.filter-btn {
+  padding: 5px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  transition: all .15s;
+}
+.filter-btn.active, .filter-btn:hover { background: var(--surface); color: var(--text); border-color: #58a6ff44; }
+.filter-btn.buy.active  { background: var(--buy-bg);  color: var(--buy);  border-color: var(--buy); }
+.filter-btn.hold.active { background: var(--hold-bg); color: var(--hold); border-color: var(--hold); }
+.filter-btn.sell.active { background: var(--sell-bg); color: var(--sell); border-color: var(--sell); }
+
+.add-stock { display: flex; gap: 8px; }
+.add-stock input {
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+.add-stock input:focus { outline: none; border-color: var(--blue); }
+
+/* ── Grid ────────────────────────────────────────────────────── */
+main { padding: 20px 24px; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+.loading-msg, .empty-msg {
+  text-align: center;
+  color: var(--muted);
+  padding: 60px 0;
+  font-size: 16px;
+}
+
+/* ── Card ────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  transition: border-color .2s, transform .15s;
+  cursor: default;
+}
+.card:hover { border-color: #58a6ff44; transform: translateY(-2px); }
+.card.BUY  { border-left: 3px solid var(--buy); }
+.card.HOLD { border-left: 3px solid var(--hold); }
+.card.SELL { border-left: 3px solid var(--sell); }
+
+.card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
+.card-symbol { font-size: 20px; font-weight: 700; }
+.card-name   { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+.signal-badge {
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .5px;
+}
+.signal-badge.BUY  { background: var(--buy-bg);  color: var(--buy);  }
+.signal-badge.HOLD { background: var(--hold-bg); color: var(--hold); }
+.signal-badge.SELL { background: var(--sell-bg); color: var(--sell); }
+
+.card-price { font-size: 22px; font-weight: 700; margin-bottom: 12px; }
+
+/* Score bar */
+.score-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.score-bar-bg { flex: 1; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.score-bar    { height: 100%; border-radius: 3px; transition: width .4s; }
+.score-label  { font-size: 12px; color: var(--muted); width: 42px; text-align: right; }
+
+/* Metrics row */
+.metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.metric { background: var(--bg); border-radius: 6px; padding: 8px 10px; }
+.metric-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.metric-value { font-size: 15px; font-weight: 600; margin-top: 2px; }
+.metric-value.green { color: var(--buy); }
+.metric-value.red   { color: var(--sell); }
+.metric-value.muted { color: var(--muted); }
+
+/* Bollinger bar */
+.bollinger-row { margin-bottom: 14px; }
+.bollinger-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.bollinger-bar-bg { height: 6px; background: var(--border); border-radius: 3px; position: relative; }
+.bollinger-marker { position: absolute; top: -3px; width: 12px; height: 12px; border-radius: 50%; background: var(--blue); border: 2px solid var(--bg); transform: translateX(-50%); transition: left .4s; }
+
+.card-footer { display: flex; justify-content: space-between; align-items: center; }
+
+/* ── Card reasons ──────────────────────────────────────────────────────────── */
+.card-reasons {
+  margin: 10px 0 2px;
+  background: #ffffff06;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.reasons-title {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  margin-bottom: 7px;
+  font-weight: 600;
+}
+.reason-line {
+  font-size: 11.5px;
+  color: #c9d1d9;
+  line-height: 1.65;
+  padding: 1px 0;
+}
+.card-time   { font-size: 11px; color: var(--muted); }
+.btn-chart   { padding: 5px 12px; font-size: 12px; background: transparent; border: 1px solid var(--border); border-radius: 6px; color: var(--blue); cursor: pointer; }
+.btn-chart:hover { background: var(--bg); }
+
+/* ── Modal ───────────────────────────────────────────────────── */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.7);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal-overlay.open { display: flex; }
+
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  width: 100%;
+  max-width: 860px;
+  position: relative;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.modal-close {
+  position: absolute;
+  top: 14px; right: 14px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  cursor: pointer;
+}
+.modal-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.modal-header h2 { font-size: 24px; }
+.muted { color: var(--muted); font-size: 13px; }
+
+#price-chart { width: 100%; max-height: 340px; }
+
+.modal-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+
+@media (max-width: 600px) {
+  header { flex-direction: column; gap: 10px; }
+  .toolbar { flex-direction: column; align-items: flex-start; }
+  .add-stock { flex-wrap: wrap; }
+  .add-stock input { flex: 1; }
+}
+
+/* ── CAC 40 filter button ────────────────────────────────────── */
+.filter-btn.cac40.active { background: #1a1a4e; color: #7aa7ff; border-color: #7aa7ff; }
+
+/* ── CAC 40 banner ───────────────────────────────────────────── */
+.cac40-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 16px 24px;
+  background: linear-gradient(135deg, #0d1a3a 0%, #0d1117 100%);
+  border-bottom: 1px solid #1e3a6e;
+  align-items: center;
+}
+
+.index-card {
+  background: var(--surface);
+  border: 1px solid #1e3a6e;
+  border-radius: var(--radius);
+  padding: 14px 20px;
+  min-width: 160px;
+  text-align: center;
+}
+.index-label  { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; }
+.index-price  { font-size: 26px; font-weight: 700; margin: 4px 0; }
+.index-change { font-size: 13px; font-weight: 600; }
+.index-change.up   { color: var(--buy); }
+.index-change.down { color: var(--sell); }
+
+/* ── Signal distribution ─────────────────────────────────────── */
+.cac40-stats { flex: 1; min-width: 260px; }
+.stat-title  { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 10px; }
+
+.dist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.dist-lbl {
+  font-size: 12px;
+  font-weight: 600;
+  width: 70px;
+  flex-shrink: 0;
+}
+.dist-lbl.buy  { color: var(--buy); }
+.dist-lbl.hold { color: var(--hold); }
+.dist-lbl.sell { color: var(--sell); }
+.dist-lbl strong { margin-left: 4px; }
+
+.dist-bg   { flex: 1; height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.dist-fill { height: 100%; border-radius: 4px; width: 0; transition: width .6s ease; }
+.dist-fill.buy  { background: var(--buy); }
+.dist-fill.hold { background: var(--hold); }
+.dist-fill.sell { background: var(--sell); }
+
+/* ── CAC 40 badge on cards ───────────────────────────────────── */
+.cac40-flag {
+  font-size: 12px;
+  margin-left: 4px;
+  opacity: .8;
+}
+
+/* ── Fundamental button on cards ─────────────────────────────── */
+.btn-fundamental {
+  background: transparent;
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: .78rem;
+  transition: border-color .2s, color .2s;
+}
+.btn-fundamental:hover { border-color: var(--buy); color: var(--buy); }
+
+/* ── Fundamental modal ───────────────────────────────────────── */
+.fundamental-modal-card {
+  max-width: 680px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 24px;
+}
+.fund-loading, .fund-error {
+  text-align: center;
+  padding: 32px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+.fund-error a { color: var(--buy); }
+.fund-verdict-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.fund-score-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fund-sector {
+  font-size: .8rem;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+.fund-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 14px;
+}
+@media (max-width: 500px) { .fund-grid { grid-template-columns: 1fr; } }
+.fund-section { background: var(--bg2); border-radius: 10px; padding: 12px; }
+.fund-section-title {
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.fund-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 0;
+  font-size: .85rem;
+  border-bottom: 1px solid var(--border);
+}
+.fund-row:last-child { border-bottom: none; }
+.fund-row span { color: var(--muted); }
+.fund-row strong { color: var(--fg); }
+
+/* Analyst bar */
+.analyst-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 8px 0 4px;
+}
+.analyst-seg { display: flex; align-items: center; justify-content: center; font-size: .65rem; font-weight: 700; color: #fff; }
+.analyst-seg.buy  { background: var(--buy); }
+.analyst-seg.hold { background: var(--hold); }
+.analyst-seg.sell { background: var(--sell); }
+.analyst-labels { display: flex; gap: 12px; font-size: .78rem; flex-wrap: wrap; }
+
+.fund-footer {
+  text-align: right;
+  font-size: .72rem;
+  color: var(--muted);
+  margin-top: 16px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Valuation filter bar ────────────────────────────────────── */
+.fund-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 20px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.fund-filter-label {
+  font-size: .8rem;
+  color: var(--muted);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+.fund-filter-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 4px 12px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: .8rem;
+  transition: all .2s;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.fund-filter-btn:hover           { border-color: var(--fg); color: var(--fg); }
+.fund-filter-btn.active          { background: var(--border); color: var(--fg); border-color: var(--fg); }
+.fund-filter-btn.undervalued.active { background: #1a3a1a; border-color: var(--buy); color: var(--buy); }
+.fund-filter-btn.fairly.active      { background: #3a3010; border-color: var(--hold); color: var(--hold); }
+.fund-filter-btn.overvalued.active  { background: #3a1010; border-color: var(--sell); color: var(--sell); }
+.filter-count {
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 0 6px;
+  font-size: .72rem;
+  font-weight: 700;
+  min-width: 18px;
+  text-align: center;
+}
+
+/* ── Valuation badge on cards ────────────────────────────────── */
+.valuation-badge-row { margin-bottom: 8px; }
+.valuation-badge {
+  display: inline-block;
+  font-size: .72rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.valuation-badge.undervalued { background: #1a3a1a; color: var(--buy); }
+.valuation-badge.fairly      { background: #3a3010; color: var(--hold); }
+.valuation-badge.overvalued  { background: #3a1010; color: var(--sell); }
+
+/* ── Badges row (valuation + trend) ────────────────────────── */
+.card-badges-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* ── Trend badge ─────────────────────────────────────────────── */
+.trend-badge {
+  display: inline-block;
+  font-size: .72rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.trend-bull-strong { background: #0d2e1a; color: #4ade80; border: 1px solid #22c55e; }
+.trend-bull        { background: #1a3a1a; color: #86efac; }
+.trend-bear-strong { background: #2e0d0d; color: #f87171; border: 1px solid #ef4444; }
+.trend-bear        { background: #3a1010; color: #fca5a5; }
+.trend-neutral     { background: #1e2130; color: #94a3b8; }

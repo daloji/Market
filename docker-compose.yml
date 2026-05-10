@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: marketdb
+      POSTGRES_USER: market
+      POSTGRES_PASSWORD: market123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U market -d marketdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Dev SMTP server — web UI : http://localhost:8025
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+
+  app:
+    build:
+      context: .
+      dockerfile: src/main/docker/Dockerfile.jvm
+    image: market-app:latest
+    ports:
+      - "8080:8080"
+    environment:
+      QUARKUS_PROFILE: prod
+      QUARKUS_DATASOURCE_JDBC_URL: jdbc:postgresql://postgres:5432/marketdb
+      QUARKUS_DATASOURCE_USERNAME: market
+      QUARKUS_DATASOURCE_PASSWORD: market123
+      QUARKUS_MAILER_HOST: mailhog
+      QUARKUS_MAILER_PORT: "1025"
+      QUARKUS_MAILER_START_TLS: DISABLED
+      QUARKUS_MAILER_AUTH_METHODS: DISABLED
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+

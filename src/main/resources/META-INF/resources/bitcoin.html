@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>BTC Futures Intraday · x10 Levier</title>
+  <link rel="stylesheet" href="bitcoin.css"/>
+  <!-- TradingView Lightweight Charts (candlestick chart) -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+
+<!-- ── TOP BAR ──────────────────────────────────────────────────────────────── -->
+<header class="top-bar">
+  <a href="/" class="back-btn">← Tableau de bord</a>
+  <div class="header-center">
+    <span class="btc-icon">₿</span>
+    <h1>Bitcoin Futures Intraday</h1>
+    <span class="leverage-badge">x10</span>
+  </div>
+  <div class="header-right">
+    <span id="live-price">—</span>
+    <button id="btn-refresh" onclick="loadSignal()">⟳ Actualiser</button>
+    <span id="countdown-label">00:60</span>
+  </div>
+</header>
+
+<!-- ── MAIN ─────────────────────────────────────────────────────────────────── -->
+<main>
+
+<!-- ── TABS ────────────────────────────────────────────────────────────────── -->
+<nav class="tabs">
+  <button class="tab-btn active" data-tab="signal">📊 Signal</button>
+  <button class="tab-btn"        data-tab="simu">🧮 Simulation</button>
+</nav>
+
+<!-- ════════════════════════  TAB : SIGNAL  ════════════════════════════════ -->
+<div id="tab-signal" class="tab-pane active">
+
+  <!-- Signal + Entry panel -->
+  <section class="signal-section">
+
+    <!-- Direction badge -->
+    <div class="signal-card" id="signal-card">
+      <div class="signal-direction" id="signal-direction">—</div>
+      <div class="signal-confidence">
+        Confiance : <strong id="signal-confidence">—</strong>
+      </div>
+      <div class="signal-reasoning" id="signal-reasoning">Chargement…</div>
+    </div>
+
+    <!-- Entry / TP / SL table -->
+    <div class="levels-card">
+      <h2>Niveaux de trading <span class="muted">(BTC/USDT)</span></h2>
+      <table class="levels-table">
+        <thead>
+          <tr>
+            <th>Niveau</th>
+            <th>Prix BTC</th>
+            <th>P&amp;L position x10</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="row-tp">
+            <td>🎯 TP3</td>
+            <td id="tp3">—</td>
+            <td id="tp3-pnl" class="pnl green">—</td>
+          </tr>
+          <tr class="row-tp">
+            <td>🎯 TP2</td>
+            <td id="tp2">—</td>
+            <td id="tp2-pnl" class="pnl green">—</td>
+          </tr>
+          <tr class="row-tp">
+            <td>🎯 TP1</td>
+            <td id="tp1">—</td>
+            <td id="tp1-pnl" class="pnl green">—</td>
+          </tr>
+          <tr class="row-entry">
+            <td>📌 Entrée</td>
+            <td id="entry-price">—</td>
+            <td class="muted">—</td>
+          </tr>
+          <tr class="row-sl">
+            <td>🛑 Stop Loss</td>
+            <td id="stop-loss">—</td>
+            <td id="sl-pnl" class="pnl red">—</td>
+          </tr>
+          <tr class="row-liq">
+            <td>💀 Liquidation</td>
+            <td id="liquidation">—</td>
+            <td class="red">≈ -100%</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="atr-info">ATR 1h : <strong id="atr-val">—</strong> &nbsp;|&nbsp; Timestamp : <span id="ts">—</span></div>
+    </div>
+
+  </section>
+
+  <!-- Candlestick chart -->
+  <section class="chart-section">
+    <div class="chart-header">
+      <span>BTC/USDT · 1h · 100 dernières bougies</span>
+      <div class="interval-btns">
+        <button class="itvl active" data-itvl="1h">1h</button>
+        <button class="itvl" data-itvl="15m">15m</button>
+        <button class="itvl" data-itvl="4h">4h</button>
+      </div>
+    </div>
+    <div id="chart-container"></div>
+  </section>
+
+  <!-- Indicators panel -->
+  <section class="indicators-section">
+
+    <!-- RSI gauge -->
+    <div class="ind-card">
+      <div class="ind-title">RSI (14)</div>
+      <div class="rsi-bar-bg">
+        <div class="rsi-bar-fill" id="rsi-fill"></div>
+        <div class="rsi-needle" id="rsi-needle"></div>
+      </div>
+      <div class="rsi-zones">
+        <span class="green">Survente &lt;30</span>
+        <span class="hold">Neutre</span>
+        <span class="red">Surachat &gt;70</span>
+      </div>
+      <div class="ind-value" id="rsi-value">—</div>
+    </div>
+
+    <!-- EMA -->
+    <div class="ind-card">
+      <div class="ind-title">EMA (9 / 21)</div>
+      <div class="ema-row">
+        <span class="ema-lbl">EMA 9</span>
+        <span class="ema-val green" id="ema9">—</span>
+      </div>
+      <div class="ema-row">
+        <span class="ema-lbl">EMA 21</span>
+        <span class="ema-val" id="ema21">—</span>
+      </div>
+      <div class="ind-value" id="ema-signal">—</div>
+    </div>
+
+    <!-- MACD -->
+    <div class="ind-card">
+      <div class="ind-title">MACD (12/26/9)</div>
+      <div class="macd-row"><span>Ligne</span>   <span id="macd-line">—</span></div>
+      <div class="macd-row"><span>Signal</span>  <span id="macd-sig">—</span></div>
+      <div class="macd-row"><span>Histogramme</span><span id="macd-hist" class="bold">—</span></div>
+    </div>
+
+    <!-- Bollinger -->
+    <div class="ind-card">
+      <div class="ind-title">Bandes de Bollinger (20)</div>
+      <div class="boll-row"><span class="red">Upper</span>   <span id="boll-upper">—</span></div>
+      <div class="boll-row"><span class="muted">Mid</span>   <span id="boll-mid">—</span></div>
+      <div class="boll-row"><span class="green">Lower</span> <span id="boll-lower">—</span></div>
+      <div class="boll-position-bar">
+        <div class="boll-pos-fill" id="boll-pos-fill"></div>
+        <div class="boll-pos-needle" id="boll-pos-needle"></div>
+      </div>
+      <div class="boll-pos-val" id="boll-pos-val">Position : —%</div>
+    </div>
+
+  </section>
+
+</div><!-- /tab-signal -->
+
+<!-- ════════════════════════  TAB : SIMULATION  ════════════════════════════ -->
+<div id="tab-simu" class="tab-pane">
+
+  <section class="simu-section">
+    <div id="simu-setup" class="card-panel">
+      <h2>⚙️ Configurer le trade</h2>
+      <div class="simu-setup-grid">
+
+        <div class="input-group">
+          <label>💰 Mise (USDT)</label>
+          <input type="number" id="simu-amount" value="100" min="1" step="10"/>
+        </div>
+
+        <div class="input-group">
+          <label>📌 Prix d'entrée ($)</label>
+          <div style="display:flex;gap:8px">
+            <input type="number" id="simu-entry" step="0.01" style="flex:1"/>
+            <button class="btn-fill" onclick="simuFillPrice()">Prix actuel</button>
+          </div>
+        </div>
+
+        <div class="input-group">
+          <label>🔀 Direction</label>
+          <div class="dir-btns">
+            <button class="dir-btn long active" id="simu-long"  onclick="simuSetDir('LONG')">▲ LONG</button>
+            <button class="dir-btn short"       id="simu-short" onclick="simuSetDir('SHORT')">▼ SHORT</button>
+          </div>
+        </div>
+
+        <div class="input-group">
+          <label>⚡ Levier : <strong id="leverage-label">×10</strong></label>
+          <input type="range" id="simu-leverage" min="1" max="20" value="10"
+                 oninput="document.getElementById('leverage-label').textContent='×'+this.value"/>
+        </div>
+
+        <div class="input-group" style="grid-column:1/-1">
+          <label>💸 Frais (par ordre)</label>
+          <div class="dir-btns">
+            <button class="dir-btn fee active" id="fee-taker" onclick="simuSetFee(0.0004,'taker')">Taker 0.04%</button>
+            <button class="dir-btn fee"        id="fee-maker" onclick="simuSetFee(0.0002,'maker')">Maker 0.02%</button>
+          </div>
+          <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+            <span style="font-size:12px;color:var(--muted)">Personnalisé :</span>
+            <input type="number" id="fee-custom" min="0" max="1" step="0.001" placeholder="ex: 0.03"
+                   style="width:90px" oninput="simuSetFee(parseFloat(this.value)/100,'custom')"/>
+            <span style="font-size:12px;color:var(--muted)">%</span>
+          </div>
+        </div>
+
+      </div>
+      <button class="btn-open-trade" onclick="simuOpen()">🚀 Ouvrir le trade</button>
+    </div>
+
+    <!-- ── Live tracker (visible après ouverture) ──────────────────────── -->
+    <div id="simu-live" class="simu-live-wrap" style="display:none">
+
+      <!-- Header live -->
+      <div class="live-header card-panel">
+        <div class="live-dir-badge" id="live-dir-badge">LONG</div>
+        <div class="live-meta">
+          <span>Entrée : <strong id="live-entry-lbl">—</strong></span>
+          <span>Mise : <strong id="live-amount-lbl">—</strong></span>
+          <span>Levier : <strong id="live-lev-lbl">—</strong></span>
+          <span>Frais : <strong id="live-fee-lbl" style="color:var(--sell)">—</strong></span>
+          <span class="live-timer">⏱ <span id="live-duration">0s</span></span>
+        </div>
+        <button class="btn-close-trade" onclick="simuClose()">✖ Fermer le trade</button>
+      </div>
+
+      <!-- Trailing stop alert -->
+      <div id="trail-alert" class="trail-alert" style="display:none">
+        <div class="trail-alert-icon">📈</div>
+        <div class="trail-alert-body">
+          <div class="trail-alert-title">🔒 Trailing Stop — Accompagnez la hausse</div>
+          <div class="trail-milestone" id="trail-milestone"></div>
+          <div class="trail-reason"    id="trail-reason"></div>
+        </div>
+        <div class="trail-alert-action">
+          <div class="trail-sl-lbl">SL suggéré</div>
+          <div class="trail-sl-val" id="trail-sl-val">—</div>
+          <div class="trail-gain-lbl">Profit protégé</div>
+          <div class="trail-gain-val" id="trail-gain-val">—</div>
+        </div>
+      </div>
+
+      <!-- Exit alert -->
+      <div id="exit-alert" class="exit-alert" style="display:none">
+        <div class="exit-alert-icon" id="exit-alert-icon">⚠️</div>
+        <div class="exit-alert-body">
+          <div class="exit-alert-title" id="exit-alert-title">Retournement possible</div>
+          <div class="exit-alert-reasons" id="exit-alert-reasons"></div>
+        </div>
+        <div class="exit-alert-action">
+          <div class="exit-price-lbl">Prix de sortie conseillé</div>
+          <div class="exit-price-val" id="exit-price-val">—</div>
+          <div class="exit-pnl-val"   id="exit-pnl-val">—</div>
+        </div>
+      </div>
+
+      <!-- P&L + Levels en grille -->
+      <div class="live-grid">
+
+        <!-- Big P&L card -->
+        <div class="pnl-big-card" id="pnl-big-card">
+          <div class="pnl-label">P&amp;L non réalisé</div>
+          <div class="pnl-big-value" id="pnl-big-value">—</div>
+          <div class="pnl-big-pct"   id="pnl-big-pct">—</div>
+          <div class="pnl-current-price">Prix actuel BTC : <strong id="live-current-price">—</strong></div>
+          <div class="pnl-fees-row">
+            Frais aller+retour : <span id="pnl-fees" class="red">—</span>
+            &nbsp;|&nbsp; <strong>P&amp;L net : <span id="pnl-net">—</span></strong>
+          </div>
+        </div>
+
+        <!-- Levels progress -->
+        <div class="live-levels card-panel">
+          <div class="ll-row" id="ll-tp3">
+            <div class="ll-label green">🎯 TP3</div>
+            <div class="ll-price" id="ll-tp3-price">—</div>
+            <div class="ll-bar-wrap"><div class="ll-bar green" id="ll-tp3-bar"></div></div>
+            <div class="ll-dist"  id="ll-tp3-dist">—</div>
+          </div>
+          <div class="ll-row" id="ll-tp2">
+            <div class="ll-label green">🎯 TP2</div>
+            <div class="ll-price" id="ll-tp2-price">—</div>
+            <div class="ll-bar-wrap"><div class="ll-bar green" id="ll-tp2-bar"></div></div>
+            <div class="ll-dist"  id="ll-tp2-dist">—</div>
+          </div>
+          <div class="ll-row" id="ll-tp1">
+            <div class="ll-label green">🎯 TP1</div>
+            <div class="ll-price" id="ll-tp1-price">—</div>
+            <div class="ll-bar-wrap"><div class="ll-bar green" id="ll-tp1-bar"></div></div>
+            <div class="ll-dist"  id="ll-tp1-dist">—</div>
+          </div>
+          <div class="ll-row entry-row">
+            <div class="ll-label blue">📌 Entrée</div>
+            <div class="ll-price" id="ll-entry-price">—</div>
+            <div class="ll-bar-wrap"></div>
+            <div class="ll-dist muted">0%</div>
+          </div>
+          <div class="ll-row" id="ll-sl">
+            <div class="ll-label red">🛑 SL</div>
+            <div class="ll-price" id="ll-sl-price">—</div>
+            <div class="ll-bar-wrap"><div class="ll-bar red" id="ll-sl-bar"></div></div>
+            <div class="ll-dist"  id="ll-sl-dist">—</div>
+          </div>
+          <div class="ll-row">
+            <div class="ll-label" style="color:#7d3f3f">💀 Liq.</div>
+            <div class="ll-price" id="ll-liq-price">—</div>
+            <div class="ll-bar-wrap"><div class="ll-bar" style="background:#7d3f3f" id="ll-liq-bar"></div></div>
+            <div class="ll-dist"  id="ll-liq-dist">—</div>
+          </div>
+        </div>
+
+      </div><!-- /live-grid -->
+
+      <!-- P&L history sparkline -->
+      <div class="card-panel">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px">Historique P&amp;L</span>
+          <span style="font-size:11px;color:var(--muted)" id="sparkline-count">—</span>
+        </div>
+        <canvas id="sparkline" height="80"></canvas>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Chart pleine largeur (en bas) -->
+  <section class="simu-chart-section">
+    <div class="chart-header">
+      <span>BTC/USDT · bougies en direct</span>
+      <div class="interval-btns">
+        <button class="itvl-simu active" data-itvl="1h">1h</button>
+        <button class="itvl-simu" data-itvl="15m">15m</button>
+        <button class="itvl-simu" data-itvl="4h">4h</button>
+      </div>
+    </div>
+    <div id="chart-container-simu"></div>
+  </section>
+
+</div><!-- /tab-simu -->
+
+</main>
+
+<!-- ── DISCLAIMER ────────────────────────────────────────────────────────────── -->
+<footer class="disclaimer">
+  ⚠️ <strong>Avertissement :</strong> Le trading de futures Bitcoin avec effet de levier ×10
+  présente des risques de pertes importantes, y compris la perte totale de votre capital.
+  Ces signaux sont purement indicatifs et ne constituent en aucun cas des conseils financiers.
+  Tradez uniquement ce que vous pouvez vous permettre de perdre.
+</footer>
+
+<script src="bitcoin.js"></script>
+</body>
+</html>
