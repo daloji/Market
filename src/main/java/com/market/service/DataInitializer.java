@@ -105,8 +105,12 @@ public class DataInitializer {
 
         LOG.infof("Fetching initial data for %d stocks (this may take a moment)…", symbols.size());
         symbols.forEach(symbol -> {
-            stockDataService.fetchAndStoreQuotes(symbol);
-            recommendationService.generateRecommendation(symbol);
+            try {
+                stockDataService.fetchAndStoreQuotes(symbol);
+                recommendationService.generateRecommendation(symbol);
+            } catch (Exception e) {
+                LOG.warnf("Could not fetch data for %s at startup: %s", symbol, e.getMessage());
+            }
         });
         LOG.info("Initial market analysis complete.");
     }

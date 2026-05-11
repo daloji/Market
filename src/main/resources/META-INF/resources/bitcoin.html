@@ -20,6 +20,7 @@
   </div>
   <div class="header-right">
     <span id="live-price">—</span>
+    <a href="trade-history.html" class="btn-history" style="font-size:13px;padding:4px 10px;border:1px solid var(--muted);border-radius:6px;color:var(--muted);text-decoration:none">📋 Historique</a>
     <button id="btn-refresh" onclick="loadSignal()">⟳ Actualiser</button>
     <span id="countdown-label">00:60</span>
   </div>
@@ -32,6 +33,7 @@
 <nav class="tabs">
   <button class="tab-btn active" data-tab="signal">📊 Signal</button>
   <button class="tab-btn"        data-tab="simu">🧮 Simulation</button>
+  <button class="tab-btn"        data-tab="real">💹 Trades Réels</button>
 </nav>
 
 <!-- ════════════════════════  TAB : SIGNAL  ════════════════════════════════ -->
@@ -318,6 +320,23 @@
           </div>
         </div>
 
+        <div class="input-group">
+          <label>🛑 Stop-Loss ($)</label>
+          <input type="number" id="simu-sl" step="0.01" placeholder="ex: 103000"/>
+          <div class="simu-hint" id="simu-sl-hint"></div>
+        </div>
+
+        <div class="input-group">
+          <label>🎯 Take-Profit ($)</label>
+          <input type="number" id="simu-tp" step="0.01" placeholder="ex: 107000"/>
+          <div class="simu-hint" id="simu-tp-hint"></div>
+        </div>
+
+        <div class="input-group" style="grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <span id="simu-rr-hint" style="font-size:13px;font-weight:700"></span>
+          <button class="btn-fill" onclick="if(lastSignal) simuPrefillLevels(lastSignal)" style="font-size:12px">↺ Recalculer SL/TP</button>
+        </div>
+
       </div>
       <button class="btn-open-trade" onclick="simuOpen()">🚀 Ouvrir le trade</button>
     </div>
@@ -451,6 +470,161 @@
   </section>
 
 </div><!-- /tab-simu -->
+
+<!-- ══════════════════════  TAB : TRADES RÉELS  ══════════════════════════════ -->
+<div id="tab-real" class="tab-pane">
+
+  <!-- ── Portfolio summary bar ──────────────────────────────────────────── -->
+  <div class="real-summary-bar" id="real-summary-bar">
+    <div class="real-sum-item">
+      <div class="real-sum-label">Positions ouvertes</div>
+      <div class="real-sum-value" id="real-count">0</div>
+    </div>
+    <div class="real-sum-item">
+      <div class="real-sum-label">P&L non réalisé</div>
+      <div class="real-sum-value" id="real-total-pnl">—</div>
+    </div>
+    <div class="real-sum-item">
+      <div class="real-sum-label">Exposition totale</div>
+      <div class="real-sum-value" id="real-exposure">—</div>
+    </div>
+    <div style="margin-left:auto;display:flex;gap:10px;align-items:center">
+      <a href="trade-history.html?type=real" class="btn-fill" style="font-size:12px">📋 Historique réel</a>
+      <button class="btn-open-trade" style="padding:8px 16px;font-size:13px" onclick="realShowForm()">＋ Nouvelle position</button>
+    </div>
+  </div>
+
+  <!-- ── Add position form (hidden by default) ──────────────────────────── -->
+  <div id="real-form-wrap" class="card-panel" style="display:none;margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <h2 style="margin:0">📝 Enregistrer une position réelle</h2>
+      <button onclick="realHideForm()" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer">✕</button>
+    </div>
+    <div class="simu-setup-grid">
+
+      <div class="input-group">
+        <label>🏦 Broker / Exchange</label>
+        <select id="real-broker" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:9px 12px;font-size:15px">
+          <option value="Binance">Binance</option>
+          <option value="Bybit">Bybit</option>
+          <option value="Kraken">Kraken</option>
+          <option value="Coinbase">Coinbase</option>
+          <option value="OKX">OKX</option>
+          <option value="eToro">eToro</option>
+          <option value="Autre">Autre</option>
+        </select>
+      </div>
+
+      <div class="input-group">
+        <label>🪙 Paire</label>
+        <input type="text" id="real-symbol" value="BTC/USDT"
+               style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:9px 12px;font-size:15px"/>
+      </div>
+
+      <div class="input-group">
+        <label>📌 Prix d'entrée ($)</label>
+        <div style="display:flex;gap:8px">
+          <input type="number" id="real-entry" step="0.01" style="flex:1"/>
+          <button class="btn-fill" onclick="realFillPrice()">Prix actuel</button>
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label>🔀 Direction</label>
+        <div class="dir-btns">
+          <button class="dir-btn long active" id="real-long"  onclick="realSetDir('LONG')">▲ LONG</button>
+          <button class="dir-btn short"       id="real-short" onclick="realSetDir('SHORT')">▼ SHORT</button>
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label>💰 Mise (USDT)</label>
+        <input type="number" id="real-amount" value="100" min="1" step="10"/>
+      </div>
+
+      <div class="input-group">
+        <label>⚡ Levier : <strong id="real-leverage-label">×1</strong></label>
+        <input type="range" id="real-leverage" min="1" max="50" value="1"
+               oninput="document.getElementById('real-leverage-label').textContent='×'+this.value"/>
+      </div>
+
+      <div class="input-group">
+        <label>🛑 Stop-Loss ($)</label>
+        <input type="number" id="real-sl" step="0.01" placeholder="optionnel"/>
+        <div class="simu-hint" id="real-sl-hint"></div>
+      </div>
+
+      <div class="input-group">
+        <label>🎯 Take-Profit ($)</label>
+        <input type="number" id="real-tp" step="0.01" placeholder="optionnel"/>
+        <div class="simu-hint" id="real-tp-hint"></div>
+      </div>
+
+      <div class="input-group" style="grid-column:1/-1;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span id="real-rr-hint" style="font-size:13px;font-weight:700"></span>
+        <button class="btn-fill" onclick="if(lastSignal) realPrefillLevels(lastSignal)" style="font-size:12px">↺ SL/TP du signal</button>
+      </div>
+
+      <div class="input-group" style="grid-column:1/-1">
+        <label>📝 Note (optionnel)</label>
+        <input type="text" id="real-note" placeholder="ex: Entrée sur rebond EMA21"
+               style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:9px 12px;font-size:15px"/>
+      </div>
+
+    </div>
+    <button class="btn-open-trade" onclick="realOpen()" style="margin-top:16px">📥 Enregistrer la position</button>
+  </div>
+
+  <!-- ── Open positions table ──────────────────────────────────────────── -->
+  <div id="real-positions-wrap">
+    <div id="real-empty" class="real-empty-state" style="display:none">
+      <div style="font-size:40px;margin-bottom:12px">📭</div>
+      <div>Aucune position réelle ouverte.</div>
+      <div style="margin-top:8px;font-size:13px;color:var(--muted)">Cliquez sur <strong>+ Nouvelle position</strong> pour en ajouter une.</div>
+    </div>
+    <div id="real-positions-table-wrap" style="overflow-x:auto">
+      <table class="real-positions-table" id="real-positions-table">
+        <thead>
+          <tr>
+            <th>Broker</th>
+            <th>Paire</th>
+            <th>Dir.</th>
+            <th>Entrée</th>
+            <th>Prix actuel</th>
+            <th>Levier</th>
+            <th>Mise</th>
+            <th>P&L $</th>
+            <th>P&L %</th>
+            <th>SL</th>
+            <th>TP</th>
+            <th>Durée</th>
+            <th>Note</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="real-positions-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div><!-- /tab-real -->
+
+<!-- ── Close real trade modal ─────────────────────────────────────────────── -->
+<div id="real-close-modal" class="real-modal-overlay" style="display:none" onclick="realModalBgClick(event)">
+  <div class="real-modal">
+    <h3>✖ Clôturer la position</h3>
+    <div id="real-modal-info" style="font-size:13px;color:var(--muted);margin-bottom:16px"></div>
+    <div class="input-group">
+      <label>Prix de sortie réel ($)</label>
+      <input type="number" id="real-close-price" step="0.01"/>
+    </div>
+    <div id="real-modal-pnl" style="font-size:22px;font-weight:700;text-align:center;margin:16px 0">—</div>
+    <div style="display:flex;gap:12px;margin-top:8px">
+      <button class="btn-close-trade" style="flex:1" onclick="realConfirmClose()">Confirmer la clôture</button>
+      <button onclick="realCloseModal()" style="flex:1;background:none;border:1px solid var(--border);color:var(--muted);padding:10px;border-radius:7px;cursor:pointer">Annuler</button>
+    </div>
+  </div>
+</div>
 
 </main>
 

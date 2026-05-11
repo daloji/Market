@@ -16,68 +16,87 @@ import java.util.Map;
 @Consumes(MediaType.APPLICATION_JSON)
 public class TradeResource {
 
-    @Inject
-    TradeService tradeService;
+    @Inject TradeService tradeService;
 
-    // ─── Open a new trade ──────────────────────────────────────────────────────
+    // ══════════════════════  SIMULATION  ══════════════════════════════════════
 
     @POST
     @Transactional
     public Response openTrade(TradeRequest req) {
-        if (req == null || req.amount <= 0 || req.entryPrice <= 0) {
-            return Response.status(400).entity(Map.of("error", "amount and entryPrice are required")).build();
-        }
-        Trade.Direction dir;
-        try {
-            dir = Trade.Direction.valueOf(req.direction.toUpperCase());
-        } catch (Exception e) {
-            return Response.status(400).entity(Map.of("error", "direction must be LONG or SHORT")).build();
-        }
-
-        double atr = req.atr > 0 ? req.atr : req.entryPrice * 0.01;
-        Trade trade = tradeService.openTrade(
-                req.amount, dir, req.leverage > 0 ? req.leverage : 10,
-                req.entryPrice, req.feeRate > 0 ? req.feeRate : 0.0004, atr);
-        return Response.ok(toDTO(trade)).build();
+        return doOpen(req, "SIMULATION");
     }
 
-    // ─── List active trades ────────────────────────────────────────────────────
-
-    @GET
-    @Path("/active")
+    @GET @Path("/active")
     public List<TradeDTO> getActive() {
         return tradeService.getActiveTrades().stream().map(this::toDTO).toList();
     }
 
-    // ─── List all trades ───────────────────────────────────────────────────────
-
-    @GET
-    public List<TradeDTO> getAll() {
-        return tradeService.getAllTrades().stream().map(this::toDTO).toList();
+    @GET @Path("/history")
+    public List<TradeDTO> getHistory() {
+        return tradeService.getClosedTrades().stream().map(this::toDTO).toList();
     }
 
-    // ─── Get single trade ──────────────────────────────────────────────────────
+    // ══════════════════════  REAL TRADES  ═════════════════════════════════════
 
-    @GET
-    @Path("/{id}")
+    @POST @Path("/real")
+    @Transactional
+    public Response openRealTrade(TradeRequest req) {
+        return doOpen(req, "REAL");
+    }
+
+    @GET @Path("/real/active")
+    public List<TradeDTO> getRealActive() {
+        return tradeService.getActiveReal().stream().map(this::toDTO).toList();
+    }
+
+    @GET @Path("/real/history")
+    public List<TradeDTO> getRealHistory() {
+        return tradeService.getClosedReal().stream().map(this::toDTO).toList();
+    }
+
+    // ══════════════════════  SHARED  ══════════════════════════════════════════
+
+    @GET @Path("/all/history")
+    public List<TradeDTO> getAllHistory() {
+        return tradeService.getAllClosed().stream().map(this::toDTO).toList();
+    }
+
+    @GET @Path("/{id}")
     public Response getById(@PathParam("id") Long id) {
         Trade t = tradeService.getById(id);
         if (t == null) return Response.status(404).build();
         return Response.ok(toDTO(t)).build();
     }
 
-    // ─── Close a trade ─────────────────────────────────────────────────────────
-
-    @DELETE
-    @Path("/{id}")
+    @DELETE @Path("/{id}")
     @Transactional
-    public Response closeTrade(@PathParam("id") Long id, @QueryParam("reason") String reason) {
-        Trade t = tradeService.closeTrade(id, reason != null ? reason : "USER_CLOSED");
+    public Response closeTrade(@PathParam("id") Long id,
+                               @QueryParam("reason") String reason,
+                               @QueryParam("closePrice") @DefaultValue("0") double closePrice) {
+        Trade t = tradeService.closeTrade(id,
+                reason != null ? reason : "USER_CLOSED", closePrice);
         if (t == null) return Response.status(404).build();
         return Response.ok(toDTO(t)).build();
     }
 
-    // ─── DTOs ──────────────────────────────────────────────────────────────────
+    // ─── Shared open helper ────────────────────────────────────────────────────
+
+    private Response doOpen(TradeRequest req, String type) {
+        if (req == null || req.amount <= 0 || req.entryPrice <= 0)
+            return Response.status(400).entity(Map.of("error", "amount and entryPrice are required")).build();
+        Trade.Direction dir;
+        try { dir = Trade.Direction.valueOf(req.direction.toUpperCase()); }
+        catch (Exception e) { return Response.status(400).entity(Map.of("error", "direction must be LONG or SHORT")).build(); }
+
+        double atr = req.atr > 0 ? req.atr : req.entryPrice * 0.01;
+        Trade trade = tradeService.openTrade(
+                req.amount, dir, req.leverage > 0 ? req.leverage : 1,
+                req.entryPrice, req.feeRate > 0 ? req.feeRate : 0.0004, atr,
+                req.sl, req.tp, type, req.broker, req.symbol, req.note);
+        return Response.ok(toDTO(trade)).build();
+    }
+
+    // ─── DTO mapping ──────────────────────────────────────────────────────────
 
     private TradeDTO toDTO(Trade t) {
         TradeDTO d = new TradeDTO();
@@ -92,8 +111,8 @@ public class TradeResource {
         d.tp3          = t.tp3;
         d.sl           = t.sl;
         d.liq          = t.liq;
-        d.openedAt     = t.openedAt != null ? t.openedAt.toEpochMilli() : 0;
-        d.closedAt     = t.closedAt != null ? t.closedAt.toEpochMilli() : 0;
+        d.openedAt     = t.openedAt  != null ? t.openedAt.toEpochMilli()  : 0;
+        d.closedAt     = t.closedAt  != null ? t.closedAt.toEpochMilli()  : 0;
         d.status       = t.status.name();
         d.currentPrice = t.currentPrice;
         d.pnlUsd       = t.pnlUsd;
@@ -101,10 +120,14 @@ public class TradeResource {
         d.pnlPct       = t.pnlPct;
         d.feesTotal    = t.feesTotal;
         d.closeReason  = t.closeReason;
+        d.tradeType    = t.tradeType;
+        d.broker       = t.broker;
+        d.symbol       = t.symbol;
+        d.note         = t.note;
         return d;
     }
 
-    // ─── Request / Response POJOs ──────────────────────────────────────────────
+    // ─── Request / Response POJOs ─────────────────────────────────────────────
 
     public static class TradeRequest {
         public double amount;
@@ -113,6 +136,11 @@ public class TradeResource {
         public double entryPrice;
         public double feeRate;
         public double atr;
+        public double sl;
+        public double tp;
+        public String broker;
+        public String symbol;
+        public String note;
     }
 
     public static class TradeDTO {
@@ -123,14 +151,15 @@ public class TradeResource {
         public double entryPrice;
         public double feeRate;
         public double tp1, tp2, tp3, sl, liq;
-        public long   openedAt;
-        public long   closedAt;
+        public long   openedAt, closedAt;
         public String status;
         public double currentPrice;
-        public double pnlUsd;
-        public double pnlNet;
-        public double pnlPct;
-        public double feesTotal;
+        public double pnlUsd, pnlNet, pnlPct, feesTotal;
         public String closeReason;
+        public String tradeType;
+        public String broker;
+        public String symbol;
+        public String note;
     }
 }
+

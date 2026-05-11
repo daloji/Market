@@ -10,7 +10,7 @@ import java.util.List;
 @Table(name = "trade")
 public class Trade extends PanacheEntity {
 
-    public enum Status { OPEN, CLOSED }
+    public enum Status    { OPEN, CLOSED }
     public enum Direction { LONG, SHORT }
 
     @Enumerated(EnumType.STRING)
@@ -42,13 +42,46 @@ public class Trade extends PanacheEntity {
 
     public String closeReason;
 
+    // ─── Trade type ────────────────────────────────────────────────────────────
+    /** "SIMULATION" (default) or "REAL" */
+    public String tradeType = "SIMULATION";
+    public String broker;                    // e.g. "Binance", "Bybit"
+    public String symbol   = "BTC/USDT";
+    @Column(length = 500)
+    public String note;
+
     // ─── Queries ───────────────────────────────────────────────────────────────
 
-    public static List<Trade> findActive() {
+    /** All OPEN trades of all types (used by scheduler). */
+    public static List<Trade> findAllOpen() {
         return list("status", Status.OPEN);
     }
 
-    public static List<Trade> findAll(int maxResults) {
-        return find("ORDER BY openedAt DESC").page(0, maxResults).list();
+    /** Active SIMULATION trades. */
+    public static List<Trade> findActive() {
+        return list("status = ?1 AND tradeType = ?2", Status.OPEN, "SIMULATION");
+    }
+
+    /** Active REAL trades. */
+    public static List<Trade> findActiveReal() {
+        return list("status = ?1 AND tradeType = ?2", Status.OPEN, "REAL");
+    }
+
+    /** Closed SIMULATION trades, newest first. */
+    public static List<Trade> findClosed(int maxResults) {
+        return find("status = ?1 AND tradeType = ?2 ORDER BY closedAt DESC",
+                Status.CLOSED, "SIMULATION").page(0, maxResults).list();
+    }
+
+    /** Closed REAL trades, newest first. */
+    public static List<Trade> findClosedReal(int maxResults) {
+        return find("status = ?1 AND tradeType = ?2 ORDER BY closedAt DESC",
+                Status.CLOSED, "REAL").page(0, maxResults).list();
+    }
+
+    /** All closed trades (both types), newest first. */
+    public static List<Trade> findAllClosed(int maxResults) {
+        return find("status = ?1 ORDER BY closedAt DESC", Status.CLOSED).page(0, maxResults).list();
     }
 }
+

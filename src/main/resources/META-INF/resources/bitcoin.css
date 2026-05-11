@@ -501,6 +501,14 @@ main {
 }
 .btn-fill:hover { background: var(--blue); color: #fff; }
 
+.simu-hint {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--muted);
+  font-style: italic;
+  min-height: 14px;
+}
+
 /* Direction buttons */
 .dir-btns { display: flex; gap: 10px; }
 .dir-btn {
@@ -719,6 +727,19 @@ main {
   border-color: var(--sell);
   animation: pulse-red 1.2s ease-in-out infinite;
 }
+.exit-alert.warning {
+  background: #2a1500;
+  border-color: var(--sell);
+}
+.exit-alert.success {
+  background: #0d2f22;
+  border-color: var(--buy);
+  animation: pulse-green-exit 1.5s ease-in-out 3;
+}
+@keyframes pulse-green-exit {
+  0%, 100% { box-shadow: 0 0 0 0 #3fb95000; }
+  50%       { box-shadow: 0 0 16px 4px #3fb95055; }
+}
 @keyframes pulse-red {
   0%, 100% { box-shadow: 0 0 0 0 #f8514900; }
   50%       { box-shadow: 0 0 16px 4px #f8514955; }
@@ -732,6 +753,8 @@ main {
 .exit-alert.moderate .exit-alert-title { color: var(--hold); }
 .exit-alert.high     .exit-alert-title { color: #e0823d; }
 .exit-alert.critical .exit-alert-title { color: var(--sell); }
+.exit-alert.warning  .exit-alert-title { color: var(--sell); }
+.exit-alert.success  .exit-alert-title { color: var(--buy); }
 
 .exit-alert-reasons { font-size: 12px; color: var(--muted); line-height: 1.7; }
 
@@ -810,3 +833,74 @@ main {
   align-items: start;
 }
 @media (max-width: 860px) { .live-grid { grid-template-columns: 1fr; } }
+
+/* ════════════════  REAL TRADES TAB  ════════════════════════════ */
+
+.real-summary-bar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.real-sum-item { min-width: 100px; }
+.real-sum-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; margin-bottom: 4px; }
+.real-sum-value { font-size: 20px; font-weight: 700; }
+
+/* Positions table */
+.real-positions-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #111418;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  font-size: 13px;
+}
+.real-positions-table th {
+  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .5px; padding: 9px 12px; text-align: left;
+  background: #0c0f12; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.real-positions-table td {
+  padding: 11px 12px; border-bottom: 1px solid #1e2328; vertical-align: middle;
+}
+.real-positions-table tr:last-child td { border-bottom: none; }
+.real-positions-table tr:hover td { background: #1a1f27; }
+
+/* Broker badge */
+.broker-badge {
+  display: inline-block; padding: 2px 8px;
+  border-radius: 4px; font-size: 11px; font-weight: 600;
+  background: #1e2730; color: #7dd3fc; border: 1px solid #1e4060;
+}
+
+/* SL/TP alert in table */
+.sl-near  { color: var(--sell) !important; font-weight: 700; }
+.tp-near  { color: var(--buy)  !important; font-weight: 700; }
+
+/* Empty state */
+.real-empty-state {
+  text-align: center; padding: 60px 20px;
+  color: var(--muted); font-size: 14px;
+}
+
+/* Close modal */
+.real-modal-overlay {
+  position: fixed; inset: 0;
+  background: #00000088; z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+}
+.real-modal {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 32px;
+  min-width: 340px; max-width: 460px; width: 90%;
+}
+.real-modal h3 { margin: 0 0 16px; font-size: 18px; }

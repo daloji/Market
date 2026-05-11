@@ -11,7 +11,7 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * Manages Bitcoin simulation trades with server-side persistence.
+ * Manages Bitcoin trades (simulation and real) with server-side persistence.
  * Trades survive page reloads and are updated every 15 s by the scheduler.
  */
 @ApplicationScoped
@@ -26,7 +26,9 @@ public class TradeService {
 
     @Transactional
     public Trade openTrade(double amount, Trade.Direction direction, int leverage,
-                           double entryPrice, double feeRate, double atr) {
+                           double entryPrice, double feeRate, double atr,
+                           double customSl, double customTp,
+                           String tradeType, String broker, String symbol, String note) {
 
         double sign = direction == Trade.Direction.LONG ? 1 : -1;
         double liqFactor = direction == Trade.Direction.LONG
@@ -39,51 +41,62 @@ public class TradeService {
         trade.leverage   = leverage;
         trade.entryPrice = entryPrice;
         trade.feeRate    = feeRate;
-        trade.tp1        = entryPrice + sign * 1 * atr;
-        trade.tp2        = entryPrice + sign * 2 * atr;
-        trade.tp3        = entryPrice + sign * 3 * atr;
-        trade.sl         = entryPrice - sign * 1 * atr;
-        trade.liq        = entryPrice * liqFactor;
+        trade.sl  = customSl > 0 ? customSl : entryPrice - sign * atr;
+        trade.tp1 = customTp > 0 ? customTp : entryPrice + sign * atr;
+        trade.tp2 = entryPrice + sign * 2 * atr;
+        trade.tp3 = entryPrice + sign * 3 * atr;
+        trade.liq = entryPrice * liqFactor;
         trade.openedAt   = Instant.now();
         trade.status     = Trade.Status.OPEN;
         trade.currentPrice = entryPrice;
+        trade.tradeType  = (tradeType != null && !tradeType.isBlank()) ? tradeType : "SIMULATION";
+        trade.broker     = broker;
+        trade.symbol     = (symbol != null && !symbol.isBlank()) ? symbol : "BTC/USDT";
+        trade.note       = note;
         trade.persist();
-        LOG.infof("Trade opened: %s ×%d at %.2f (id=%d)", direction, leverage, entryPrice, trade.id);
+        LOG.infof("[%s] Trade opened: %s ×%d at %.2f SL=%.2f TP=%.2f (id=%d)",
+                trade.tradeType, direction, leverage, entryPrice, trade.sl, trade.tp1, trade.id);
         return trade;
     }
 
     // ─── Close ─────────────────────────────────────────────────────────────────
 
+    /**
+     * Close a trade. For REAL trades, optionally use a custom exit price to
+     * recalculate the final P&L before closing.
+     */
     @Transactional
-    public Trade closeTrade(Long id, String reason) {
+    public Trade closeTrade(Long id, String reason, double closePrice) {
         Trade trade = Trade.findById(id);
         if (trade == null || trade.status == Trade.Status.CLOSED) return trade;
+
+        // For real trades: recalculate P&L using actual exit price if provided
+        if ("REAL".equals(trade.tradeType) && closePrice > 0) {
+            computePnl(trade, closePrice);
+        }
+
         trade.status      = Trade.Status.CLOSED;
         trade.closedAt    = Instant.now();
         trade.closeReason = reason;
-        LOG.infof("Trade closed: id=%d reason=%s finalPnlNet=%.2f", id, reason, trade.pnlNet);
+        LOG.infof("[%s] Trade closed: id=%d reason=%s finalPnlNet=%.2f",
+                trade.tradeType, id, reason, trade.pnlNet);
         return trade;
     }
 
-    // ─── Active list ───────────────────────────────────────────────────────────
+    // ─── Queries ───────────────────────────────────────────────────────────────
 
-    public List<Trade> getActiveTrades() {
-        return Trade.findActive();
-    }
-
-    public List<Trade> getAllTrades() {
-        return Trade.findAll(100);
-    }
-
-    public Trade getById(Long id) {
-        return Trade.findById(id);
-    }
+    public List<Trade> getActiveTrades()    { return Trade.findActive(); }
+    public List<Trade> getActiveReal()      { return Trade.findActiveReal(); }
+    public List<Trade> getClosedTrades()    { return Trade.findClosed(500); }
+    public List<Trade> getClosedReal()      { return Trade.findClosedReal(500); }
+    public List<Trade> getAllClosed()       { return Trade.findAllClosed(1000); }
+    public Trade       getById(Long id)     { return Trade.findById(id); }
 
     // ─── Background update (called by scheduler every 15 s) ───────────────────
 
     @Transactional
     public void updateAllTrades() {
-        List<Trade> open = Trade.findActive();
+        List<Trade> open = Trade.findAllOpen();
         if (open.isEmpty()) return;
 
         double currentPrice;
@@ -103,27 +116,51 @@ public class TradeService {
 
     // ─── Private helpers ───────────────────────────────────────────────────────
 
-    private void updateTrade(Trade t, double current) {
-        t.currentPrice = current;
-
+    private void computePnl(Trade t, double current) {
         double btcMove = t.direction == Trade.Direction.LONG
                 ? current - t.entryPrice
                 : t.entryPrice - current;
-
-        t.pnlUsd   = t.amount * (btcMove / t.entryPrice) * t.leverage;
-        t.pnlPct   = t.pnlUsd / t.amount * 100.0;
+        t.currentPrice = current;
+        t.pnlUsd    = t.amount * (btcMove / t.entryPrice) * t.leverage;
+        t.pnlPct    = t.pnlUsd / t.amount * 100.0;
         t.feesTotal = t.amount * t.leverage * t.feeRate * 2;
-        t.pnlNet   = t.pnlUsd - t.feesTotal;
+        t.pnlNet    = t.pnlUsd - t.feesTotal;
+    }
 
-        // Auto-close on liquidation
+    private void updateTrade(Trade t, double current) {
+        computePnl(t, current);
+
+        // Real trades: no auto-close; user closes manually in their broker
+        if ("REAL".equals(t.tradeType)) return;
+
+        // ── Simulation auto-close logic ────────────────────────────────────────
+        if (t.tp1 > 0) {
+            boolean tpHit = t.direction == Trade.Direction.LONG
+                    ? current >= t.tp1 : current <= t.tp1;
+            if (tpHit) {
+                t.status = Trade.Status.CLOSED; t.closedAt = Instant.now();
+                t.closeReason = "TP_HIT";
+                LOG.infof("Trade %d TP hit at %.2f (tp=%.2f)", t.id, current, t.tp1);
+                return;
+            }
+        }
+        if (t.sl > 0) {
+            boolean slHit = t.direction == Trade.Direction.LONG
+                    ? current <= t.sl : current >= t.sl;
+            if (slHit) {
+                t.status = Trade.Status.CLOSED; t.closedAt = Instant.now();
+                t.closeReason = "SL_HIT";
+                LOG.warnf("Trade %d SL hit at %.2f (sl=%.2f)", t.id, current, t.sl);
+                return;
+            }
+        }
         boolean liquidated = t.direction == Trade.Direction.LONG
-                ? current <= t.liq
-                : current >= t.liq;
+                ? current <= t.liq : current >= t.liq;
         if (liquidated) {
-            t.status      = Trade.Status.CLOSED;
-            t.closedAt    = Instant.now();
+            t.status = Trade.Status.CLOSED; t.closedAt = Instant.now();
             t.closeReason = "LIQUIDATION";
             LOG.warnf("Trade %d liquidated at %.2f", t.id, current);
         }
     }
 }
+

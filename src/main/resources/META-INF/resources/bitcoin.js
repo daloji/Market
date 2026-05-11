@@ -3,15 +3,21 @@
 // ── State ──────────────────────────────────────────────────────────────────────
 let chart           = null;
 let candleSeries    = null;
-let priceLines      = [];   // track price lines to remove on next update
+let priceLines      = [];
 let chartSimu       = null;
 let candleSeriesSimu = null;
-let priceLinesSimu  = [];   // trade level lines on the simu chart
+let priceLinesSimu  = [];
 let currentInterval = '1h';
 let countdownSec    = 15;
 let countdownTimer  = null;
 let lastSignal      = null;
-let highWaterMark   = null;  // prix max (LONG) ou min (SHORT) atteint pendant le trade
+let highWaterMark   = null;
+
+// ── Real trade state ───────────────────────────────────────────────────────────
+let realTrades      = [];   // active REAL trades
+let realTimer       = null;
+let realDir         = 'LONG';
+let realClosingId   = null; // id of trade being closed via modal
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -20,7 +26,8 @@ document.addEventListener('DOMContentLoaded', () => {
   setupTabs();
   setupIntervalButtons();
   loadSignal();
-  loadActiveTrade();  // Restore persisted trade on page load
+  loadActiveTrade();
+  loadRealTrades();
   startCountdown();
 });
 
@@ -126,11 +133,8 @@ async function loadSignal() {
       addChartAnnotations(s, s.candles);
     }
 
-    // Pré-remplir la simulation avec le signal courant
-    if (!document.getElementById('simu-entry').value) {
-      document.getElementById('simu-entry').value = s.currentPrice;
-    }
-    if (s.direction !== 'WAIT') simuSetDir(s.direction);
+    // Pré-remplir la simulation avec les niveaux du signal
+    if (!activeTrade) simuPrefillLevels(s);
 
     // Mettre à jour le tracker live si un trade est ouvert
     if (activeTrade) updateLiveSimu();
@@ -624,11 +628,102 @@ function simuFillPrice() {
     document.getElementById('simu-entry').value = lastSignal.currentPrice;
 }
 
+// ── Auto pre-fill SL / TP from signal analysis ────────────────────────────────
+function simuPrefillLevels(s) {
+  const price = s.currentPrice;
+  if (!price) return;
+
+  const atr = s.atr || price * 0.01;
+  const r2  = v => Math.round(v * 100) / 100;
+
+  // Determine direction: use signal, or EMA trend when WAIT
+  const dir = s.direction === 'LONG'  ? 'LONG'
+            : s.direction === 'SHORT' ? 'SHORT'
+            : (s.ema9 > s.ema21 ? 'LONG' : 'SHORT');
+
+  // Always update entry + direction
+  document.getElementById('simu-entry').value = price;
+  simuSetDir(dir);
+
+  let sl, tp, slHint, tpHint;
+
+  if (dir === 'LONG') {
+    // ── SL : EMA21 if it's a close dynamic support, else 1.5×ATR ──
+    const slEma  = r2(s.ema21 * 0.9995);   // just below EMA21
+    const slBase = r2(price - 1.5 * atr);
+    if (s.ema21 < price && s.ema21 > slBase) {
+      sl = slEma;
+      slHint = 'EMA21 — support dynamique';
+    } else {
+      sl = slBase;
+      slHint = '1.5× ATR sous le prix';
+    }
+
+    // ── TP : Bollinger Upper if far enough, else 2×ATR ──
+    const distUp = s.bollingerUpper - price;
+    if (distUp > 0.8 * atr) {
+      tp = r2(s.bollingerUpper);
+      tpHint = 'Bollinger Upper — résistance naturelle';
+    } else {
+      tp = r2(price + 2 * atr);
+      tpHint = '2× ATR au-dessus du prix';
+    }
+  } else { // SHORT
+    // ── SL : EMA21 if it's a close dynamic resistance, else 1.5×ATR ──
+    const slEma  = r2(s.ema21 * 1.0005);   // just above EMA21
+    const slBase = r2(price + 1.5 * atr);
+    if (s.ema21 > price && s.ema21 < slBase) {
+      sl = slEma;
+      slHint = 'EMA21 — résistance dynamique';
+    } else {
+      sl = slBase;
+      slHint = '1.5× ATR au-dessus du prix';
+    }
+
+    // ── TP : Bollinger Lower if far enough, else 2×ATR ──
+    const distDn = price - s.bollingerLower;
+    if (distDn > 0.8 * atr) {
+      tp = r2(s.bollingerLower);
+      tpHint = 'Bollinger Lower — support naturel';
+    } else {
+      tp = r2(price - 2 * atr);
+      tpHint = '2× ATR sous le prix';
+    }
+  }
+
+  document.getElementById('simu-sl').value = sl;
+  document.getElementById('simu-tp').value = tp;
+
+  // Show reasoning hints
+  const slEl = document.getElementById('simu-sl-hint');
+  const tpEl = document.getElementById('simu-tp-hint');
+  if (slEl) slEl.textContent = '→ ' + slHint;
+  if (tpEl) tpEl.textContent = '→ ' + tpHint;
+
+  // R/R ratio
+  const rrEl = document.getElementById('simu-rr-hint');
+  if (rrEl && sl && tp) {
+    const risk   = Math.abs(price - sl);
+    const reward = Math.abs(tp - price);
+    const rr     = risk > 0 ? (reward / risk).toFixed(2) : '—';
+    rrEl.textContent = `R/R : 1 : ${rr}`;
+    rrEl.style.color = parseFloat(rr) >= 1.5 ? 'var(--buy)' : parseFloat(rr) >= 1 ? 'var(--hold)' : 'var(--sell)';
+  }
+}
+
 async function simuOpen() {
   const amount   = parseFloat(document.getElementById('simu-amount').value) || 0;
   const entry    = parseFloat(document.getElementById('simu-entry').value)  || 0;
   const leverage = parseInt(document.getElementById('simu-leverage').value) || 10;
+  const customSl = parseFloat(document.getElementById('simu-sl').value) || 0;
+  const customTp = parseFloat(document.getElementById('simu-tp').value) || 0;
   if (!amount || !entry) { alert('Renseigne la mise et le prix d\'entrée.'); return; }
+
+  // Validate custom SL/TP direction consistency
+  if (customSl > 0 && simuDir === 'LONG'  && customSl >= entry) { alert('SL doit être INFÉRIEUR au prix d\'entrée pour un LONG.'); return; }
+  if (customSl > 0 && simuDir === 'SHORT' && customSl <= entry) { alert('SL doit être SUPÉRIEUR au prix d\'entrée pour un SHORT.'); return; }
+  if (customTp > 0 && simuDir === 'LONG'  && customTp <= entry) { alert('TP doit être SUPÉRIEUR au prix d\'entrée pour un LONG.'); return; }
+  if (customTp > 0 && simuDir === 'SHORT' && customTp >= entry) { alert('TP doit être INFÉRIEUR au prix d\'entrée pour un SHORT.'); return; }
 
   const atr = lastSignal?.atr || entry * 0.01;
 
@@ -636,7 +731,8 @@ async function simuOpen() {
     const res = await fetch('/api/trades', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ amount, direction: simuDir, leverage, entryPrice: entry, feeRate: simuFeeRate, atr })
+      body: JSON.stringify({ amount, direction: simuDir, leverage, entryPrice: entry,
+                             feeRate: simuFeeRate, atr, sl: customSl, tp: customTp })
     });
     if (!res.ok) throw new Error(await res.text());
     activeTrade = await res.json();
@@ -685,9 +781,8 @@ async function refreshTradeFromBackend() {
     if (!res.ok) return;
     const updated = await res.json();
     if (updated.status === 'CLOSED') {
-      // Trade auto-closed (liquidation)
       stopTradeTimers();
-      showLiquidationBanner(updated);
+      showClosureBanner(updated);
       activeTrade = null;
       pnlHistory  = [];
       document.getElementById('simu-live').style.display  = 'none';
@@ -699,19 +794,60 @@ async function refreshTradeFromBackend() {
   } catch(e) { /* ignore */ }
 }
 
-function showLiquidationBanner(trade) {
+function showClosureBanner(trade) {
+  const reason    = trade.closeReason || 'CLOSED';
+  const isProfit  = trade.pnlNet >= 0;
+  const isTp      = reason === 'TP_HIT';
+  const isSl      = reason === 'SL_HIT';
+  const isLiq     = reason === 'LIQUIDATION';
+
   const el = document.getElementById('exit-alert');
-  el.className = 'exit-alert critical';
   el.style.display = 'flex';
-  setText('exit-alert-icon',  '💀');
-  setText('exit-alert-title', 'LIQUIDATION — Position fermée automatiquement');
-  document.getElementById('exit-alert-reasons').innerHTML =
-    `<div>• Prix de liquidation atteint : ${fmt(trade.liq)} $</div>` +
-    `<div>• Perte nette : ${fmt(trade.pnlNet)} $</div>`;
+
+  if (isTp) {
+    el.className = 'exit-alert success';
+    setText('exit-alert-icon',  '🎯');
+    setText('exit-alert-title', 'TAKE PROFIT ATTEINT — Position fermée automatiquement');
+    document.getElementById('exit-alert-reasons').innerHTML =
+      `<div>• Prix de Take-Profit : ${fmt(trade.tp1)} $</div>` +
+      `<div>• Gain net : +${fmt(trade.pnlNet)} $  (${trade.pnlPct.toFixed(2)}%)</div>`;
+  } else if (isSl) {
+    el.className = 'exit-alert warning';
+    setText('exit-alert-icon',  '🛑');
+    setText('exit-alert-title', 'STOP-LOSS ATTEINT — Position fermée automatiquement');
+    document.getElementById('exit-alert-reasons').innerHTML =
+      `<div>• Prix de Stop-Loss : ${fmt(trade.sl)} $</div>` +
+      `<div>• Perte nette : ${fmt(trade.pnlNet)} $  (${trade.pnlPct.toFixed(2)}%)</div>`;
+  } else if (isLiq) {
+    el.className = 'exit-alert critical';
+    setText('exit-alert-icon',  '💀');
+    setText('exit-alert-title', 'LIQUIDATION — Position fermée automatiquement');
+    document.getElementById('exit-alert-reasons').innerHTML =
+      `<div>• Prix de liquidation atteint : ${fmt(trade.liq)} $</div>` +
+      `<div>• Perte nette : ${fmt(trade.pnlNet)} $</div>`;
+  } else {
+    el.className = isProfit ? 'exit-alert success' : 'exit-alert';
+    setText('exit-alert-icon',  isProfit ? '✅' : '⚠️');
+    setText('exit-alert-title', 'Position fermée manuellement');
+    document.getElementById('exit-alert-reasons').innerHTML =
+      `<div>• P&L net : ${fmt(trade.pnlNet)} $ (${trade.pnlPct.toFixed(2)}%)</div>`;
+  }
+
   setText('exit-price-val', fmt(trade.currentPrice) + ' $');
   const exitPnlEl = document.getElementById('exit-pnl-val');
   exitPnlEl.textContent = fmt(trade.pnlNet) + ' $';
-  exitPnlEl.style.color = 'var(--sell)';
+  exitPnlEl.style.color = isProfit ? 'var(--buy)' : 'var(--sell)';
+
+  // Show history link in banner
+  const existing = document.getElementById('history-link-btn');
+  if (!existing) {
+    const btn = document.createElement('a');
+    btn.id = 'history-link-btn';
+    btn.href = 'trade-history.html';
+    btn.textContent = '📋 Voir l\'historique';
+    btn.style.cssText = 'display:block;margin-top:10px;color:var(--muted);font-size:13px;text-decoration:none';
+    document.getElementById('exit-alert-reasons').appendChild(btn);
+  }
 }
 
 function renderActiveTrade() {
@@ -1024,3 +1160,238 @@ function drawSparkline() {
   }
 }
 
+
+// ════════════════════════  REAL TRADES  ════════════════════════════════════════
+
+const fmtR   = v  => Number(v).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtPR  = v  => (v >= 0 ? '+' : '') + fmtR(v);
+const dur    = (openMs) => {
+  if (!openMs) return '—';
+  const s = Math.floor((Date.now() - openMs) / 1000);
+  if (s < 60)   return s + 's';
+  if (s < 3600) return Math.floor(s/60) + 'min';
+  return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'min';
+};
+
+// ── Direction buttons ─────────────────────────────────────────────────────────
+function realSetDir(d) {
+  realDir = d;
+  document.getElementById('real-long').classList.toggle('active', d === 'LONG');
+  document.getElementById('real-short').classList.toggle('active', d === 'SHORT');
+}
+
+function realFillPrice() {
+  if (lastSignal?.currentPrice)
+    document.getElementById('real-entry').value = lastSignal.currentPrice;
+}
+
+// ── Pre-fill SL/TP from signal (same logic as simulation) ─────────────────────
+function realPrefillLevels(s) {
+  const entry = parseFloat(document.getElementById('real-entry').value) || s.currentPrice;
+  const atr   = s.atr || entry * 0.01;
+  const r2    = v => Math.round(v * 100) / 100;
+  const dir   = realDir;
+
+  let sl, tp, slHint, tpHint;
+  if (dir === 'LONG') {
+    const slEma = r2(s.ema21 * 0.9995), slBase = r2(entry - 1.5 * atr);
+    sl = (s.ema21 < entry && s.ema21 > slBase) ? slEma : slBase;
+    slHint = sl === slEma ? 'EMA21 — support dynamique' : '1.5× ATR sous le prix';
+    tp = (s.bollingerUpper - entry) > 0.8 * atr ? r2(s.bollingerUpper) : r2(entry + 2 * atr);
+    tpHint = (s.bollingerUpper - entry) > 0.8 * atr ? 'Bollinger Upper' : '2× ATR';
+  } else {
+    const slEma = r2(s.ema21 * 1.0005), slBase = r2(entry + 1.5 * atr);
+    sl = (s.ema21 > entry && s.ema21 < slBase) ? slEma : slBase;
+    slHint = sl === slEma ? 'EMA21 — résistance dynamique' : '1.5× ATR au-dessus';
+    tp = (entry - s.bollingerLower) > 0.8 * atr ? r2(s.bollingerLower) : r2(entry - 2 * atr);
+    tpHint = (entry - s.bollingerLower) > 0.8 * atr ? 'Bollinger Lower' : '2× ATR';
+  }
+
+  document.getElementById('real-sl').value = sl;
+  document.getElementById('real-tp').value = tp;
+  const slH = document.getElementById('real-sl-hint'); if (slH) slH.textContent = '→ ' + slHint;
+  const tpH = document.getElementById('real-tp-hint'); if (tpH) tpH.textContent = '→ ' + tpHint;
+  const rrH = document.getElementById('real-rr-hint');
+  if (rrH && sl && tp) {
+    const rr = (Math.abs(tp - entry) / Math.abs(entry - sl)).toFixed(2);
+    rrH.textContent = `R/R : 1:${rr}`;
+    rrH.style.color = parseFloat(rr) >= 1.5 ? 'var(--buy)' : parseFloat(rr) >= 1 ? 'var(--hold)' : 'var(--sell)';
+  }
+}
+
+// ── Form show/hide ─────────────────────────────────────────────────────────────
+function realShowForm() {
+  document.getElementById('real-form-wrap').style.display = 'block';
+  if (lastSignal) {
+    document.getElementById('real-entry').value = lastSignal.currentPrice;
+    realSetDir(lastSignal.direction !== 'WAIT' ? lastSignal.direction : (lastSignal.ema9 > lastSignal.ema21 ? 'LONG' : 'SHORT'));
+    realPrefillLevels(lastSignal);
+  }
+}
+function realHideForm() {
+  document.getElementById('real-form-wrap').style.display = 'none';
+}
+
+// ── Open a real trade ──────────────────────────────────────────────────────────
+async function realOpen() {
+  const amount   = parseFloat(document.getElementById('real-amount').value) || 0;
+  const entry    = parseFloat(document.getElementById('real-entry').value)  || 0;
+  const leverage = parseInt(document.getElementById('real-leverage').value) || 1;
+  const sl       = parseFloat(document.getElementById('real-sl').value) || 0;
+  const tp       = parseFloat(document.getElementById('real-tp').value) || 0;
+  const broker   = document.getElementById('real-broker').value;
+  const symbol   = document.getElementById('real-symbol').value || 'BTC/USDT';
+  const note     = document.getElementById('real-note').value;
+
+  if (!amount || !entry) { alert('Renseigne la mise et le prix d\'entrée.'); return; }
+
+  if (sl > 0 && realDir === 'LONG'  && sl >= entry) { alert('SL doit être inférieur au prix d\'entrée (LONG)'); return; }
+  if (sl > 0 && realDir === 'SHORT' && sl <= entry) { alert('SL doit être supérieur au prix d\'entrée (SHORT)'); return; }
+  if (tp > 0 && realDir === 'LONG'  && tp <= entry) { alert('TP doit être supérieur au prix d\'entrée (LONG)'); return; }
+  if (tp > 0 && realDir === 'SHORT' && tp >= entry) { alert('TP doit être inférieur au prix d\'entrée (SHORT)'); return; }
+
+  const atr = lastSignal?.atr || entry * 0.01;
+  try {
+    const res = await fetch('/api/trades/real', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount, direction: realDir, leverage, entryPrice: entry,
+                             feeRate: 0.0004, atr, sl, tp, broker, symbol, note })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    realHideForm();
+    await loadRealTrades();
+  } catch(e) { alert('Erreur: ' + e.message); }
+}
+
+// ── Load & render active real trades ──────────────────────────────────────────
+async function loadRealTrades() {
+  try {
+    const res = await fetch('/api/trades/real/active');
+    if (!res.ok) return;
+    realTrades = await res.json();
+    renderRealTrades();
+    if (realTrades.length > 0 && !realTimer) startRealTimer();
+    if (realTrades.length === 0 && realTimer)  stopRealTimer();
+  } catch(e) { /* ignore */ }
+}
+
+function startRealTimer() {
+  if (realTimer) clearInterval(realTimer);
+  realTimer = setInterval(loadRealTrades, 15000);
+}
+function stopRealTimer() {
+  if (realTimer) { clearInterval(realTimer); realTimer = null; }
+}
+
+// ── Render positions table ────────────────────────────────────────────────────
+function renderRealTrades() {
+  const tbody    = document.getElementById('real-positions-tbody');
+  const emptyEl  = document.getElementById('real-empty');
+  const tableWrap= document.getElementById('real-positions-table-wrap');
+  const countEl  = document.getElementById('real-count');
+  const pnlEl    = document.getElementById('real-total-pnl');
+  const expEl    = document.getElementById('real-exposure');
+
+  countEl.textContent = realTrades.length;
+
+  if (realTrades.length === 0) {
+    emptyEl.style.display   = 'block';
+    tableWrap.style.display = 'none';
+    pnlEl.textContent = '—'; pnlEl.style.color = '';
+    expEl.textContent = '—';
+    return;
+  }
+  emptyEl.style.display   = 'none';
+  tableWrap.style.display = 'block';
+
+  let totalPnl = 0, totalExp = 0;
+  let rows = '';
+  for (const t of realTrades) {
+    totalPnl += t.pnlNet || 0;
+    totalExp += (t.amount || 0) * (t.leverage || 1);
+
+    const dir    = (t.direction || '').toLowerCase();
+    const pnlCls = t.pnlNet >= 0 ? 'pnl-pos' : 'pnl-neg';
+    const cp     = t.currentPrice || t.entryPrice;
+
+    // SL/TP proximity alerts (within 0.5%)
+    const slNear = t.sl > 0 && Math.abs(cp - t.sl) / cp < 0.005;
+    const tpNear = t.tp1 > 0 && Math.abs(cp - t.tp1) / cp < 0.005;
+
+    rows += `<tr>
+      <td><span class="broker-badge">${t.broker || '—'}</span></td>
+      <td>${t.symbol || 'BTC/USDT'}</td>
+      <td><span class="dir-badge ${dir}">${dir === 'long' ? '▲ LONG' : '▼ SHORT'}</span></td>
+      <td>${fmtR(t.entryPrice)} $</td>
+      <td>${fmtR(cp)} $</td>
+      <td style="color:var(--muted)">×${t.leverage}</td>
+      <td>${fmtR(t.amount)} $</td>
+      <td class="${pnlCls}">${fmtPR(t.pnlNet)} $</td>
+      <td class="${pnlCls}">${fmtPR(t.pnlPct)}%</td>
+      <td class="${slNear ? 'sl-near' : ''}">${t.sl > 0 ? fmtR(t.sl) + ' $' : '—'}</td>
+      <td class="${tpNear ? 'tp-near' : ''}">${t.tp1 > 0 ? fmtR(t.tp1) + ' $' : '—'}</td>
+      <td style="color:var(--muted)">${dur(t.openedAt)}</td>
+      <td style="color:var(--muted);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${t.note || ''}">${t.note || '—'}</td>
+      <td>
+        <button onclick="realOpenCloseModal(${t.id})"
+                style="background:#3d1a1a;border:1px solid var(--sell);color:var(--sell);padding:4px 10px;border-radius:5px;cursor:pointer;font-size:12px">
+          ✖ Clôturer
+        </button>
+      </td>
+    </tr>`;
+  }
+  tbody.innerHTML = rows;
+
+  pnlEl.textContent = fmtPR(totalPnl) + ' $';
+  pnlEl.style.color = totalPnl >= 0 ? 'var(--buy)' : 'var(--sell)';
+  expEl.textContent = fmtR(totalExp) + ' $';
+}
+
+// ── Close modal ───────────────────────────────────────────────────────────────
+function realOpenCloseModal(id) {
+  const t = realTrades.find(x => x.id === id);
+  if (!t) return;
+  realClosingId = id;
+  const cp = t.currentPrice || t.entryPrice;
+  document.getElementById('real-close-price').value = cp;
+  document.getElementById('real-modal-info').innerHTML =
+    `<strong>${t.direction}</strong> ${t.symbol} — Entrée : ${fmtR(t.entryPrice)} $ — Mise : ${fmtR(t.amount)} $ ×${t.leverage}`;
+  realUpdateModalPnl();
+  document.getElementById('real-close-modal').style.display = 'flex';
+  document.getElementById('real-close-price').addEventListener('input', realUpdateModalPnl);
+}
+
+function realUpdateModalPnl() {
+  const t  = realTrades.find(x => x.id === realClosingId);
+  if (!t) return;
+  const cp = parseFloat(document.getElementById('real-close-price').value) || t.currentPrice;
+  const mv = t.direction === 'LONG' ? cp - t.entryPrice : t.entryPrice - cp;
+  const pnlUsd  = t.amount * (mv / t.entryPrice) * t.leverage;
+  const fees    = t.amount * t.leverage * (t.feeRate || 0.0004) * 2;
+  const pnlNet  = pnlUsd - fees;
+  const pnlPct  = pnlNet / t.amount * 100;
+  const el = document.getElementById('real-modal-pnl');
+  el.textContent = `${fmtPR(pnlNet)} $ (${fmtPR(pnlPct)}%)`;
+  el.style.color = pnlNet >= 0 ? 'var(--buy)' : 'var(--sell)';
+}
+
+async function realConfirmClose() {
+  if (!realClosingId) return;
+  const cp = parseFloat(document.getElementById('real-close-price').value) || 0;
+  try {
+    const res = await fetch(`/api/trades/${realClosingId}?reason=USER_CLOSED&closePrice=${cp}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await res.text());
+    realCloseModal();
+    await loadRealTrades();
+  } catch(e) { alert('Erreur clôture: ' + e.message); }
+}
+
+function realCloseModal() {
+  document.getElementById('real-close-modal').style.display = 'none';
+  realClosingId = null;
+}
+function realModalBgClick(e) {
+  if (e.target === document.getElementById('real-close-modal')) realCloseModal();
+}

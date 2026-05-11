@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Historique des Trades BTC</title>
+  <link rel="stylesheet" href="bitcoin.css"/>
+  <style>
+    /* ── History page overrides ─────────────────────────── */
+    body { max-width: 1100px; margin: 0 auto; }
+
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin: 20px 0;
+    }
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      text-align: center;
+    }
+    .stat-value { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+    .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+    .stat-value.green  { color: var(--buy); }
+    .stat-value.red    { color: var(--sell); }
+    .stat-value.yellow { color: var(--hold); }
+
+    .day-group { margin-bottom: 28px; }
+    .day-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius) var(--radius) 0 0;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .day-pnl { font-size: 16px; font-weight: 700; }
+
+    .trade-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #111418;
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 var(--radius) var(--radius);
+      overflow: hidden;
+    }
+    .trade-table th {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      background: #0c0f12;
+    }
+    .trade-table td {
+      padding: 10px 12px;
+      font-size: 13px;
+      border-bottom: 1px solid #1e2328;
+      vertical-align: middle;
+    }
+    .trade-table tr:last-child td { border-bottom: none; }
+    .trade-table tr:hover td { background: #1a1f27; }
+
+    .dir-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .5px;
+    }
+    .dir-badge.long  { background: #1a3d2b; color: var(--buy); }
+    .dir-badge.short { background: #3d1a1a; color: var(--sell); }
+
+    .reason-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .reason-badge.tp       { background: #1a3d2b; color: var(--buy); }
+    .reason-badge.sl       { background: #3d1a1a; color: var(--sell); }
+    .reason-badge.liq      { background: #4d0a0a; color: #ff4444; }
+    .reason-badge.user     { background: #1e2328; color: var(--muted); }
+
+    .pnl-pos { color: var(--buy); font-weight: 600; }
+    .pnl-neg { color: var(--sell); font-weight: 600; }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--muted);
+    }
+    .empty-state .big-icon { font-size: 48px; margin-bottom: 16px; }
+
+    .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
+
+    .type-filter-btn {
+      padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600;
+      background: var(--card); border: 1px solid var(--border);
+      color: var(--muted); cursor: pointer; transition: all .2s;
+    }
+    .type-filter-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .type-filter-btn:hover:not(.active) { border-color: var(--blue); color: var(--blue); }
+  </style>
+</head>
+<body>
+
+<header class="top-bar">
+  <a href="bitcoin.html" class="back-btn">← BTC Futures</a>
+  <div class="header-center">
+    <span class="btc-icon">₿</span>
+    <h1>Historique des Trades</h1>
+  </div>
+  <div class="header-right">
+    <button id="btn-refresh" onclick="loadHistory()">⟳ Actualiser</button>
+  </div>
+</header>
+
+<main style="padding: 0 16px 40px">
+
+  <!-- Type filter tabs -->
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+    <button class="type-filter-btn active" data-type="all"        onclick="setFilter('all')">📋 Tout</button>
+    <button class="type-filter-btn"        data-type="simulation" onclick="setFilter('simulation')">🧮 Simulation</button>
+    <button class="type-filter-btn"        data-type="real"       onclick="setFilter('real')">💹 Trades Réels</button>
+  </div>
+
+  <!-- Global stats -->
+  <div class="stats-bar" id="stats-bar">
+    <div class="stat-card"><div class="stat-value" id="st-total">—</div><div class="stat-label">Trades clôturés</div></div>
+    <div class="stat-card"><div class="stat-value green" id="st-wins">—</div><div class="stat-label">Gagnants ✅</div></div>
+    <div class="stat-card"><div class="stat-value red"   id="st-losses">—</div><div class="stat-label">Perdants ❌</div></div>
+    <div class="stat-card"><div class="stat-value yellow" id="st-winrate">—</div><div class="stat-label">Win Rate</div></div>
+    <div class="stat-card"><div class="stat-value" id="st-pnl">—</div><div class="stat-label">P&L Net Total</div></div>
+    <div class="stat-card"><div class="stat-value" id="st-tp">—</div><div class="stat-label">TP atteints 🎯</div></div>
+    <div class="stat-card"><div class="stat-value" id="st-sl">—</div><div class="stat-label">SL touchés 🛑</div></div>
+  </div>
+
+  <!-- Trade list grouped by day -->
+  <div id="history-container">
+    <div class="loading">Chargement de l'historique…</div>
+  </div>
+
+</main>
+
+<script>
+  const fmt  = v => (v == null ? '—' : Number(v).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const fmtP = v => (v >= 0 ? '+' : '') + fmt(v);
+  function pnlClass(v) { return v >= 0 ? 'pnl-pos' : 'pnl-neg'; }
+
+  function reasonBadge(r) {
+    if (!r) return '<span class="reason-badge user">Fermé</span>';
+    if (r === 'TP_HIT')      return '<span class="reason-badge tp">🎯 TP Atteint</span>';
+    if (r === 'SL_HIT')      return '<span class="reason-badge sl">🛑 SL Touché</span>';
+    if (r === 'LIQUIDATION') return '<span class="reason-badge liq">💀 Liquidation</span>';
+    return '<span class="reason-badge user">✖ Fermé manuellement</span>';
+  }
+  function typeBadge(t) {
+    return t === 'REAL'
+      ? '<span style="font-size:10px;padding:2px 6px;background:#1a2f3d;color:#7dd3fc;border-radius:3px;border:1px solid #1e4060">💹 RÉEL</span>'
+      : '<span style="font-size:10px;padding:2px 6px;background:#1e2328;color:var(--muted);border-radius:3px;border:1px solid var(--border)">🧮 SIMU</span>';
+  }
+  function duration(openMs, closeMs) {
+    if (!openMs || !closeMs) return '—';
+    const s = Math.floor((closeMs - openMs) / 1000);
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s/60) + 'min ' + (s%60) + 's';
+    return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'min';
+  }
+  function dateLabel(ms) {
+    if (!ms) return 'Date inconnue';
+    return new Date(ms).toLocaleDateString('fr-FR', { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+  }
+  function timeLabel(ms) {
+    if (!ms) return '—';
+    return new Date(ms).toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+  }
+  function dayKey(ms) {
+    if (!ms) return '0000-00-00';
+    return new Date(ms).toISOString().slice(0, 10);
+  }
+
+  // ── Filter logic ────────────────────────────────────────────────────────────
+  let currentFilter = 'all';
+
+  // Read ?type= from URL on load
+  const urlType = new URLSearchParams(location.search).get('type');
+  if (urlType === 'real' || urlType === 'simulation') currentFilter = urlType;
+
+  function setFilter(f) {
+    currentFilter = f;
+    document.querySelectorAll('.type-filter-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.type === f));
+    loadHistory();
+  }
+
+  function endpointForFilter() {
+    if (currentFilter === 'simulation') return '/api/trades/history';
+    if (currentFilter === 'real')       return '/api/trades/real/history';
+    return '/api/trades/all/history';
+  }
+
+  async function loadHistory() {
+    document.getElementById('history-container').innerHTML = '<div class="loading">Chargement…</div>';
+    try {
+      const res = await fetch(endpointForFilter());
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      renderAll(await res.json());
+    } catch (e) {
+      document.getElementById('history-container').innerHTML =
+        `<div class="empty-state"><div class="big-icon">⚠️</div><div>Erreur : ${e.message}</div></div>`;
+    }
+  }
+
+  function renderAll(trades) {
+    const showType = currentFilter === 'all';
+    if (!trades || trades.length === 0) {
+      document.getElementById('history-container').innerHTML =
+        '<div class="empty-state"><div class="big-icon">📋</div><div>Aucun trade clôturé pour le moment.</div></div>';
+      renderStats([]);
+      return;
+    }
+    renderStats(trades);
+
+    const groups = {};
+    for (const t of trades) {
+      const key = dayKey(t.closedAt);
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(t);
+    }
+    const sortedDays = Object.keys(groups).sort((a,b) => b.localeCompare(a));
+
+    let html = '';
+    for (const day of sortedDays) {
+      const dayTrades = groups[day];
+      const dayPnl    = dayTrades.reduce((s,t) => s + (t.pnlNet||0), 0);
+      const pnlColor  = dayPnl >= 0 ? 'green' : 'red';
+
+      html += `<div class="day-group">
+        <div class="day-header">
+          <span>${dateLabel(dayTrades[0].closedAt)}</span>
+          <span class="day-pnl ${pnlColor}">${fmtP(dayPnl)} $</span>
+        </div>
+        <table class="trade-table">
+          <thead><tr>
+            ${showType ? '<th>Type</th>' : ''}
+            <th>#</th>
+            <th>Direction</th>
+            ${showType && currentFilter === 'all' ? '<th>Broker</th>' : ''}
+            <th>Entrée</th>
+            <th>Sortie</th>
+            <th>Levier</th>
+            <th>Mise</th>
+            <th>P&L $</th>
+            <th>P&L %</th>
+            <th>Durée</th>
+            <th>Clôture</th>
+            <th>Raison</th>
+          </tr></thead><tbody>`;
+
+      for (const t of dayTrades) {
+        const dir = (t.direction || '').toLowerCase();
+        html += `<tr>
+          ${showType ? `<td>${typeBadge(t.tradeType)}</td>` : ''}
+          <td style="color:var(--muted)">#${t.id}</td>
+          <td><span class="dir-badge ${dir}">${dir === 'long' ? '▲ LONG' : '▼ SHORT'}</span></td>
+          ${showType && currentFilter === 'all' ? `<td style="color:var(--muted);font-size:11px">${t.broker || '—'}</td>` : ''}
+          <td>${fmt(t.entryPrice)} $</td>
+          <td>${fmt(t.currentPrice)} $</td>
+          <td style="color:var(--muted)">×${t.leverage}</td>
+          <td>${fmt(t.amount)} $</td>
+          <td class="${pnlClass(t.pnlNet)}">${fmtP(t.pnlNet)} $</td>
+          <td class="${pnlClass(t.pnlPct)}">${fmtP(t.pnlPct)}%</td>
+          <td style="color:var(--muted)">${duration(t.openedAt, t.closedAt)}</td>
+          <td style="color:var(--muted)">${timeLabel(t.closedAt)}</td>
+          <td>${reasonBadge(t.closeReason)}</td>
+        </tr>`;
+      }
+      html += '</tbody></table></div>';
+    }
+    document.getElementById('history-container').innerHTML = html;
+  }
+
+  function renderStats(trades) {
+    const wins    = trades.filter(t => t.pnlNet > 0);
+    const losses  = trades.filter(t => t.pnlNet <= 0);
+    const totalPnl = trades.reduce((s,t) => s + (t.pnlNet||0), 0);
+    const tpCount  = trades.filter(t => t.closeReason === 'TP_HIT').length;
+    const slCount  = trades.filter(t => t.closeReason === 'SL_HIT').length;
+    const winRate  = trades.length > 0 ? (wins.length / trades.length * 100).toFixed(1) : '0.0';
+
+    document.getElementById('st-total').textContent   = trades.length;
+    document.getElementById('st-wins').textContent    = wins.length;
+    document.getElementById('st-losses').textContent  = losses.length;
+    document.getElementById('st-winrate').textContent = winRate + '%';
+    const pnlEl = document.getElementById('st-pnl');
+    pnlEl.textContent = fmtP(totalPnl) + ' $';
+    pnlEl.className = 'stat-value ' + (totalPnl >= 0 ? 'green' : 'red');
+    document.getElementById('st-tp').textContent = tpCount;
+    document.getElementById('st-sl').textContent = slCount;
+  }
+
+  // Apply filter from URL and load
+  if (currentFilter !== 'all') {
+    document.querySelectorAll('.type-filter-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.type === currentFilter));
+  }
+  loadHistory();
+</script>
+</body>
+</html>
