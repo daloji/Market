@@ -88,15 +88,20 @@ public class YahooCrumbService {
     /** Quick connectivity test — returns human-readable multi-line report. */
     public String diagnose() {
         StringBuilder sb = new StringBuilder();
-        // Test fc.yahoo.com
-        sb.append("=== fc.yahoo.com ===\n");
-        try {
-            HttpResponse<String> r = get("https://fc.yahoo.com/", null);
-            sb.append("  HTTP ").append(r.statusCode()).append("\n");
-            List<String> cookies = r.headers().allValues("Set-Cookie");
-            sb.append("  Set-Cookie headers: ").append(cookies.size()).append("\n");
-        } catch (Exception e) {
-            sb.append("  ERROR: ").append(e.getMessage()).append("\n");
+        // Test cookie sources
+        for (String cookieUrl : List.of("https://fc.yahoo.com/", "https://finance.yahoo.com/")) {
+            sb.append("=== ").append(cookieUrl).append(" ===\n");
+            try {
+                HttpResponse<String> r = get(cookieUrl, null);
+                List<String> cookies = r.headers().allValues("Set-Cookie");
+                sb.append("  HTTP ").append(r.statusCode()).append("\n");
+                sb.append("  Set-Cookie headers: ").append(cookies.size()).append("\n");
+                if (!cookies.isEmpty()) {
+                    sb.append("  First cookie: ").append(cookies.get(0), 0, Math.min(cookies.get(0).length(), 60)).append("\n");
+                }
+            } catch (Exception e) {
+                sb.append("  ERROR: ").append(e.getMessage()).append("\n");
+            }
         }
         // Test crumb endpoint on each host
         for (String host : HOSTS) {
@@ -118,15 +123,25 @@ public class YahooCrumbService {
     // ─── Private helpers ───────────────────────────────────────────────────────
 
     private synchronized void refreshCrumb() throws Exception {
-        // Step 1: get cookies from fc.yahoo.com
+        // Step 1: get session cookies — try fc.yahoo.com, then finance.yahoo.com as fallback
         String freshCookies = null;
-        try {
-            HttpResponse<String> fcResp = get("https://fc.yahoo.com/", null);
-            freshCookies = extractCookiesFromResponse(fcResp);
-            LOG.debugf("fc.yahoo.com cookies: %s",
-                    freshCookies.length() > 80 ? freshCookies.substring(0, 80) + "…" : freshCookies);
-        } catch (Exception e) {
-            LOG.warnf("fc.yahoo.com unreachable (%s) — using consent defaults", e.getMessage());
+        for (String cookieUrl : List.of("https://fc.yahoo.com/", "https://finance.yahoo.com/")) {
+            try {
+                HttpResponse<String> resp = get(cookieUrl, null);
+                String extracted = extractCookiesFromResponse(resp);
+                if (!extracted.isBlank()) {
+                    freshCookies = extracted;
+                    LOG.debugf("Cookies from %s: %s", cookieUrl,
+                            freshCookies.length() > 80 ? freshCookies.substring(0, 80) + "…" : freshCookies);
+                    break;
+                }
+                LOG.debugf("%s returned HTTP %d but no Set-Cookie headers", cookieUrl, resp.statusCode());
+            } catch (Exception e) {
+                LOG.warnf("%s unreachable: %s", cookieUrl, e.getMessage());
+            }
+        }
+        if (freshCookies == null) {
+            LOG.warnf("No session cookies obtained — falling back to consent defaults only");
         }
 
         cookieHeader = buildCookieHeader(freshCookies);
@@ -184,14 +199,16 @@ public class YahooCrumbService {
 
     /**
      * Builds the Cookie header string by merging:
-     *  1. Fresh cookies from fc.yahoo.com (if available)
-     *  2. Hard-coded EU consent cookies (GDPR bypass for datacenter IPs)
+     *  1. Fresh session cookies from fc.yahoo.com / finance.yahoo.com (if available)
+     *  2. EU consent cookies (GDPR bypass for datacenter IPs)
+     *
+     * The cmp timestamp must match the current epoch — Yahoo Finance rejects stale values.
      */
     private String buildCookieHeader(String fresh) {
-        // EU GDPR consent defaults — required on EU datacenter IPs to avoid consent redirect
+        long now = Instant.now().getEpochSecond();
         String consent = "B=0oo4k8qcmvgmm&b=3&s=13; GUCS=AQABCAFn; "
                 + "GUC=AQABCAFn; "
-                + "cmp=t=1700000000&j=0&u=1---";
+                + "cmp=t=" + now + "&j=0&u=1---";
         return fresh != null && !fresh.isBlank() ? fresh + "; " + consent : consent;
     }
 

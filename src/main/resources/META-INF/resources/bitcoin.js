@@ -8,10 +8,11 @@ let chartSimu       = null;
 let candleSeriesSimu = null;
 let priceLinesSimu  = [];
 let currentInterval = '1h';
-let countdownSec    = 15;
-let countdownTimer  = null;
 let lastSignal      = null;
 let highWaterMark   = null;
+let refreshTimer    = null;
+
+const REFRESH_INTERVAL_MS = 5000;
 
 // ── Real trade state ───────────────────────────────────────────────────────────
 let realTrades      = [];   // active REAL trades
@@ -28,8 +29,18 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSignal();
   loadActiveTrade();
   loadRealTrades();
-  startCountdown();
+  startAutoRefresh();
 });
+
+// ── Auto-refresh every 5 s ────────────────────────────────────────────────────
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(async () => {
+    await loadSignal();
+    await refreshTradeFromBackend();
+    await loadRealTrades();
+  }, REFRESH_INTERVAL_MS);
+}
 
 // ── Chart init ─────────────────────────────────────────────────────────────────
 function initChart() {
@@ -142,7 +153,6 @@ async function loadSignal() {
     document.getElementById('ts').textContent =
       new Date(s.timestamp).toLocaleTimeString('fr-FR');
 
-    countdownSec = 15;
   } catch (e) {
     console.error('loadSignal error:', e);
   }
@@ -563,19 +573,6 @@ function updateSimuChartAnnotations() {
   addLine(t.liq,        '💀 Liquidation','#8b1a1a', 1);
 }
 
-
-function startCountdown() {
-  if (countdownTimer) clearInterval(countdownTimer);
-  countdownTimer = setInterval(() => {
-    countdownSec--;
-    document.getElementById('countdown-label').textContent = `${countdownSec}s`;
-    if (countdownSec <= 0) {
-      countdownSec = 15;
-      loadSignal();
-      refreshTradeFromBackend();  // Sync P&L from backend every 15 s
-    }
-  }, 1000);
-}
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function setText(id, val) {
@@ -1271,17 +1268,7 @@ async function loadRealTrades() {
     if (!res.ok) return;
     realTrades = await res.json();
     renderRealTrades();
-    if (realTrades.length > 0 && !realTimer) startRealTimer();
-    if (realTrades.length === 0 && realTimer)  stopRealTimer();
   } catch(e) { /* ignore */ }
-}
-
-function startRealTimer() {
-  if (realTimer) clearInterval(realTimer);
-  realTimer = setInterval(loadRealTrades, 15000);
-}
-function stopRealTimer() {
-  if (realTimer) { clearInterval(realTimer); realTimer = null; }
 }
 
 // ── Render positions table ────────────────────────────────────────────────────

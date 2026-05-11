@@ -1,6 +1,13 @@
 package com.market.client.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
+
+import java.io.IOException;
 import java.util.List;
 
 /**
@@ -32,10 +39,40 @@ public class YahooQuoteSummaryResponse {
         public AssetProfile         assetProfile;
     }
 
-    /** Wraps a raw numeric value from Yahoo Finance. */
-    @JsonIgnoreProperties(ignoreUnknown = true)
+    /**
+     * Wraps a numeric value from Yahoo Finance.
+     * Yahoo sometimes returns {"raw": 0.015, "fmt": "1.5%"} and sometimes
+     * a bare number 0.015 — the custom deserializer handles both forms.
+     */
+    @JsonDeserialize(using = V.VDeserializer.class)
     public static class V {
         public Double raw;
+
+        public static class VDeserializer extends StdDeserializer<V> {
+            public VDeserializer() { super(V.class); }
+
+            @Override
+            public V deserialize(JsonParser p, DeserializationContext ctx) throws IOException {
+                V v = new V();
+                if (p.currentToken() == JsonToken.START_OBJECT) {
+                    // {"raw": 0.015, "fmt": "1.5%"} — standard form
+                    while (p.nextToken() != JsonToken.END_OBJECT) {
+                        String field = p.currentName();
+                        p.nextToken();
+                        if ("raw".equals(field)) {
+                            v.raw = p.currentToken() == JsonToken.VALUE_NULL ? null : p.getDoubleValue();
+                        } else {
+                            p.skipChildren();
+                        }
+                    }
+                } else if (p.currentToken().isNumeric()) {
+                    // bare number — e.g. dividendYield: 0.0154
+                    v.raw = p.getDoubleValue();
+                }
+                // any other token (null, string…) → v.raw stays null
+                return v;
+            }
+        }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

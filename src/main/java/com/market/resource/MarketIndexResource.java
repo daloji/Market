@@ -57,9 +57,20 @@ public class MarketIndexResource {
             out.put("yahooSymbol",   yahooSym);
             out.put("name",          meta.shortName != null ? meta.shortName : yahooSym);
             out.put("price",         meta.regularMarketPrice);
-            out.put("changePercent", meta.regularMarketChangePercent);
-            out.put("change",        meta.regularMarketChange);
-            out.put("previousClose", meta.chartPreviousClose);
+
+            // Yahoo Finance doesn't always provide change fields in chart responses —
+            // compute them from price and previousClose when missing.
+            Double price = meta.regularMarketPrice;
+            Double prev  = meta.chartPreviousClose;
+            Double change     = meta.regularMarketChange;
+            Double changePct  = meta.regularMarketChangePercent;
+            if ((change == null || changePct == null) && price != null && prev != null && prev != 0) {
+                change    = price - prev;
+                changePct = (change / prev) * 100.0;
+            }
+            out.put("changePercent", changePct);
+            out.put("change",        change);
+            out.put("previousClose", prev);
 
             return Response.ok(out).build();
         } catch (Exception e) {

@@ -270,14 +270,18 @@ async function fetchCAC40Index() {
 
     const price  = data.price?.toLocaleString('fr-FR', { minimumFractionDigits: 2 }) ?? '—';
     const pct    = data.changePercent;
-    const sign   = pct >= 0 ? '+' : '';
-    const cls    = pct >= 0 ? 'up' : 'down';
-    const arrow  = pct >= 0 ? '▲' : '▼';
 
-    document.getElementById('idx-price').textContent  = price;
+    document.getElementById('idx-price').textContent = price;
     const chEl = document.getElementById('idx-change');
-    chEl.textContent  = `${arrow} ${sign}${pct?.toFixed(2)}%`;
-    chEl.className    = `index-change ${cls}`;
+    if (pct == null) {
+      chEl.textContent = '—';
+      chEl.className   = 'index-change';
+    } else {
+      const sign  = pct >= 0 ? '+' : '';
+      const arrow = pct >= 0 ? '▲' : '▼';
+      chEl.textContent = `${arrow} ${sign}${pct.toFixed(2)}%`;
+      chEl.className   = `index-change ${pct >= 0 ? 'up' : 'down'}`;
+    }
   } catch (e) {
     console.warn('CAC 40 index fetch failed:', e);
   }
