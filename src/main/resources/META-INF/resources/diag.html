@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Diagnostic — Market App</title>
+  <style>
+    body { font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 24px; }
+    h1 { color: #00d4ff; }
+    h2 { color: #aaa; border-bottom: 1px solid #333; padding-bottom: 6px; }
+    .card { background: #16213e; border-radius: 8px; padding: 16px; margin: 12px 0; }
+    .ok  { color: #4caf50; } .warn { color: #ff9800; } .err { color: #f44336; }
+    pre  { background: #0f0f1a; padding: 12px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
+    button {
+      background: #00d4ff; color: #000; border: none; padding: 8px 20px;
+      border-radius: 6px; cursor: pointer; font-size: 14px; margin-top: 8px;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    td, th { padding: 6px 10px; border: 1px solid #333; text-align: left; }
+    th { background: #0f0f1a; color: #aaa; }
+    .spinner { display: inline-block; animation: spin 1s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1>🔧 Diagnostic — Market App</h1>
+
+  <div class="card">
+    <h2>1. API de base</h2>
+    <table id="api-table">
+      <thead><tr><th>Endpoint</th><th>Statut</th><th>Réponse</th></tr></thead>
+      <tbody id="api-rows"><tr><td colspan="3" class="warn">⏳ Chargement…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>2. Connectivité Yahoo Finance</h2>
+    <pre id="yahoo-diag">⏳ En cours…</pre>
+    <button onclick="reloadYahoo()">🔄 Re-tester Yahoo Finance</button>
+  </div>
+
+  <div class="card">
+    <h2>3. Données BTC (signal)</h2>
+    <pre id="btc-signal">⏳ Chargement…</pre>
+  </div>
+
+  <div class="card">
+    <h2>4. Stocks (watchlist)</h2>
+    <pre id="stocks">⏳ Chargement…</pre>
+  </div>
+
+  <div class="card">
+    <h2>5. Recommandations</h2>
+    <pre id="recos">⏳ Chargement…</pre>
+  </div>
+
+  <script>
+    const apis = [
+      { label: '/api/stocks',          url: '/api/stocks' },
+      { label: '/api/recommendations', url: '/api/recommendations' },
+      { label: '/api/fundamentals',    url: '/api/fundamentals' },
+    ];
+
+    async function testApi(url) {
+      const start = Date.now();
+      try {
+        const r = await fetch(url);
+        const ms = Date.now() - start;
+        const body = await r.text();
+        return { status: r.status, ms, body: body.substring(0, 200) };
+      } catch(e) {
+        return { status: 'ERR', ms: Date.now() - start, body: e.message };
+      }
+    }
+
+    async function loadApiTests() {
+      const tbody = document.getElementById('api-rows');
+      tbody.innerHTML = '';
+      for (const api of apis) {
+        const result = await testApi(api.url);
+        const ok = result.status >= 200 && result.status < 400;
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${api.label}</td>
+          <td class="${ok ? 'ok' : 'err'}">${result.status} (${result.ms}ms)</td>
+          <td><pre style="margin:0;font-size:11px">${escHtml(result.body)}</pre></td>`;
+        tbody.appendChild(row);
+      }
+    }
+
+    async function loadYahooDiag() {
+      document.getElementById('yahoo-diag').textContent = '⏳ Test en cours (peut prendre 10-15s)…';
+      try {
+        const r = await fetch('/api/fundamentals/health');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        document.getElementById('yahoo-diag').textContent = j.report || JSON.stringify(j, null, 2);
+      } catch(e) {
+        document.getElementById('yahoo-diag').textContent = '❌ Erreur: ' + e.message;
+      }
+    }
+
+    async function loadBtcSignal() {
+      try {
+        const r = await fetch('/api/crypto/signal');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        document.getElementById('btc-signal').textContent = JSON.stringify({
+          price: j.currentPrice,
+          signal: j.globalSignal,
+          trend: j.trend,
+          rsi: j.rsi,
+        }, null, 2);
+      } catch(e) {
+        // try alternate path
+        try {
+          const r2 = await fetch('/api/crypto/bitcoin/signal');
+          const j2 = await r2.json();
+          document.getElementById('btc-signal').textContent = JSON.stringify({
+            price: j2.currentPrice, signal: j2.globalSignal, trend: j2.trend
+          }, null, 2);
+        } catch(e2) {
+          document.getElementById('btc-signal').textContent = '❌ ' + e.message + '\n' + e2.message;
+        }
+      }
+    }
+
+    async function loadStocks() {
+      try {
+        const r = await fetch('/api/stocks');
+        const j = await r.json();
+        document.getElementById('stocks').textContent =
+          Array.isArray(j) ? j.map(s => s.symbol + ' — ' + (s.name||'') + ' — active:' + s.active).join('\n')
+                           : JSON.stringify(j, null, 2);
+      } catch(e) {
+        document.getElementById('stocks').textContent = '❌ ' + e.message;
+      }
+    }
+
+    async function loadRecos() {
+      try {
+        const r = await fetch('/api/recommendations');
+        const j = await r.json();
+        document.getElementById('recos').textContent =
+          Array.isArray(j) ? j.map(x => x.symbol + ' → ' + x.signal + ' (score:' + x.score + ')').join('\n')
+                           : JSON.stringify(j, null, 2);
+      } catch(e) {
+        document.getElementById('recos').textContent = '❌ ' + e.message;
+      }
+    }
+
+    function reloadYahoo() { loadYahooDiag(); }
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // Load everything in parallel
+    loadApiTests();
+    loadYahooDiag();
+    loadBtcSignal();
+    loadStocks();
+    loadRecos();
+  </script>
+</body>
+</html>
