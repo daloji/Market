@@ -12,6 +12,7 @@ import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 
 import java.util.List;
+import java.util.Map;
 
 @Path("/api")
 @Produces(MediaType.APPLICATION_JSON)
@@ -31,6 +32,14 @@ public class FundamentalResource {
     }
 
     @GET
+    @Path("/fundamentals/health")
+    @Operation(summary = "Diagnose Yahoo Finance connectivity (useful for server deployments)")
+    public Response checkYahooHealth() {
+        String report = fundamentalService.diagnoseYahoo();
+        return Response.ok(Map.of("report", report)).build();
+    }
+
+    @GET
     @Path("/fundamentals/{symbol}")
     @Operation(summary = "Get (or fetch) fundamental valuation analysis for a stock")
     public Response getFundamental(@PathParam("symbol") String symbol) {
@@ -43,8 +52,17 @@ public class FundamentalResource {
 
         FundamentalData fd = fundamentalService.analyzeAndStore(sym);
         if (fd == null) {
+            // Fallback: return last cached data from DB even if stale
+            FundamentalData cached = FundamentalData.findLatestBySymbol(sym);
+            if (cached != null) {
+                return Response.ok(cached)
+                        .header("X-Data-Stale", "true")
+                        .header("X-Data-FetchedAt", cached.fetchedAt.toString())
+                        .build();
+            }
             return Response.status(Response.Status.NOT_FOUND)
-                    .entity("No fundamental data available for " + sym).build();
+                    .entity("No fundamental data available for " + sym
+                          + " — check /api/fundamentals/health for connectivity details").build();
         }
         return Response.ok(fd).build();
     }

@@ -332,6 +332,15 @@ main { padding: 20px 24px; }
   line-height: 1.8;
 }
 .fund-error a { color: var(--buy); }
+.fund-stale {
+  background: rgba(255, 180, 0, 0.12);
+  border: 1px solid rgba(255, 180, 0, 0.4);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  color: #c8a800;
+  font-size: 0.85rem;
+}
 .fund-verdict-row {
   display: flex;
   align-items: center;

@@ -465,9 +465,20 @@ async function openFundamental(symbol) {
         <a href="https://www.alphavantage.co/support/#api-key" target="_blank">Obtenir une clé gratuite</a></div>`;
       return;
     }
-    if (!res.ok) { body.innerHTML = '<div class="fund-error">❌ Données indisponibles</div>'; return; }
+    if (!res.ok) {
+      body.innerHTML = `<div class="fund-error">❌ Données indisponibles — Yahoo Finance inaccessible depuis ce serveur.<br>
+        <small>Vérifiez la connectivité : <a href="/api/fundamentals/health" target="_blank">/api/fundamentals/health</a></small></div>`;
+      return;
+    }
     const fd = await res.json();
-    body.innerHTML = buildFundamentalHTML(fd);
+    const staleHeader = res.headers.get('X-Data-Stale');
+    const staleDate   = res.headers.get('X-Data-FetchedAt');
+    let staleWarning  = '';
+    if (staleHeader === 'true' && staleDate) {
+      const d = new Date(staleDate);
+      staleWarning = `<div class="fund-stale">⚠️ Données du ${d.toLocaleDateString('fr-FR')} (réseau Yahoo Finance indisponible depuis ce serveur)</div>`;
+    }
+    body.innerHTML = staleWarning + buildFundamentalHTML(fd);
   } catch(e) {
     body.innerHTML = `<div class="fund-error">❌ Erreur: ${e.message}</div>`;
   }

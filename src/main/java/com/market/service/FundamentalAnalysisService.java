@@ -110,6 +110,11 @@ public class FundamentalAnalysisService {
         return fd != null && fd.fetchedAt.toLocalDate().equals(LocalDate.now());
     }
 
+    /** Runs a quick Yahoo Finance connectivity test and returns a human-readable report. */
+    public String diagnoseYahoo() {
+        return crumbService.diagnose();
+    }
+
     private FundamentalData buildAndPersist(String symbol, QuoteSummaryResult r) {
         var fin = r.financialData;
         var ks  = r.defaultKeyStatistics;
