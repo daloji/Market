@@ -657,6 +657,8 @@ main {
 .pnl-big-value.loss,   .pnl-big-pct.loss   { color: var(--sell); }
 .pnl-current-price { font-size: 14px; color: var(--muted); }
 .pnl-current-price strong { color: var(--text); }
+.pnl-entry-row { font-size: 14px; color: var(--muted); margin-bottom: 2px; }
+.pnl-entry-row strong { color: var(--text); }
 
 /* Levels progress */
 .live-levels {

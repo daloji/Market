@@ -911,6 +911,7 @@ function updateLiveSimu() {
   valEl.className = 'pnl-big-value ' + (isProfit ? 'profit' : 'loss');
   pctEl.className = 'pnl-big-pct '   + (isProfit ? 'profit' : 'loss');
   setText('live-current-price', fmt(current) + ' $');
+  setText('pnl-entry-price',   fmt(entry)   + ' $');
 
   // Frais + net
   document.getElementById('pnl-fees').textContent = '−' + fmt(feesTotal) + ' $';

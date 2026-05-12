@@ -7,7 +7,6 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.jboss.logging.Logger;
-
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,7 +37,10 @@ public class CryptoAnalysisService {
     @Inject
     TechnicalAnalysisService ta;
 
-    // Simple 1-minute cache to avoid hammering Binance on every UI refresh
+    @Inject
+    WhatsAppAlertService whatsAppAlertService;
+
+    // Simple cache to avoid hammering Binance on every UI refresh
     private BitcoinSignal cached;
     private long          cachedAt = 0;
     private static final long CACHE_TTL_MS = 15_000;
@@ -50,8 +52,13 @@ public class CryptoAnalysisService {
         }
         BitcoinSignal signal = compute();
         if (signal.error == null) {
+            whatsAppAlertService.notifyIfNeeded(signal);
             cached   = signal;
             cachedAt = now;
+        } else if (cached != null) {
+            // Return stale cache rather than a broken signal with price=0
+            LOG.warnf("Signal compute error (%s) — returning stale cache (%.2f)", signal.error, cached.currentPrice);
+            return cached;
         }
         return signal;
     }
@@ -175,24 +182,25 @@ public class CryptoAnalysisService {
             double entry = currentPrice;
             double sl, tp1, tp2, tp3, liquidation;
 
+            // SL=1.5×ATR gives room to breathe vs normal wicks; TPs maintain 1:1, 1:2, 1:3 R:R
             if ("LONG".equals(direction)) {
-                sl          = r2(entry - 1.0 * atr);
-                tp1         = r2(entry + 1.0 * atr);
-                tp2         = r2(entry + 2.0 * atr);
-                tp3         = r2(entry + 3.0 * atr);
+                sl          = r2(entry - 1.5 * atr);
+                tp1         = r2(entry + 1.5 * atr);
+                tp2         = r2(entry + 3.0 * atr);
+                tp3         = r2(entry + 4.5 * atr);
                 liquidation = r2(entry * (1 - 1.0 / LEVERAGE));
             } else if ("SHORT".equals(direction)) {
-                sl          = r2(entry + 1.0 * atr);
-                tp1         = r2(entry - 1.0 * atr);
-                tp2         = r2(entry - 2.0 * atr);
-                tp3         = r2(entry - 3.0 * atr);
+                sl          = r2(entry + 1.5 * atr);
+                tp1         = r2(entry - 1.5 * atr);
+                tp2         = r2(entry - 3.0 * atr);
+                tp3         = r2(entry - 4.5 * atr);
                 liquidation = r2(entry * (1 + 1.0 / LEVERAGE));
             } else {
                 // WAIT — show levels anyway for reference
-                sl          = r2(entry - 1.0 * atr);
-                tp1         = r2(entry + 1.0 * atr);
-                tp2         = r2(entry + 2.0 * atr);
-                tp3         = r2(entry + 3.0 * atr);
+                sl          = r2(entry - 1.5 * atr);
+                tp1         = r2(entry + 1.5 * atr);
+                tp2         = r2(entry + 3.0 * atr);
+                tp3         = r2(entry + 4.5 * atr);
                 liquidation = r2(entry * (1 - 1.0 / LEVERAGE));
             }
 

@@ -86,8 +86,8 @@ class TradeServiceTest {
                 null, null, null, null);
         createdIds.add(t.id);
 
-        assertEquals(entry - atr, t.sl, 0.01);   // SL = entry - ATR
-        assertEquals(entry + atr, t.tp1, 0.01);  // TP1 = entry + ATR
+        assertEquals(entry - 1.5 * atr, t.sl, 0.01);   // SL = entry - 1.5×ATR
+        assertEquals(entry + 1.5 * atr, t.tp1, 0.01);  // TP1 = entry + 1.5×ATR
     }
 
     @Test
@@ -258,4 +258,181 @@ class TradeServiceTest {
     void getById_nonExistent_returnsNull() {
         assertNull(svc.getById(-9999L));
     }
+
+    // ─── Auto-close (TP / SL / Liquidation) ───────────────────────────────────
+
+    @Test
+    @Transactional
+    void autoClose_long_tpHit_closesWithReasonTpHit() {
+        // LONG entry=50000, ATR=1000 → TP1=51500 (1.5×ATR) — price reaches TP
+        Trade t = svc.openTrade(100, Trade.Direction.LONG, 10,
+                50000, 0.001, 1000, 0, 0, null, null, null, null);
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 51500.0);
+
+        assertEquals(Trade.Status.CLOSED, t.status);
+        assertEquals("TP_HIT", t.closeReason);
+        assertNotNull(t.closedAt);
+    }
+
+    @Test
+    @Transactional
+    void autoClose_long_slHit_closesWithReasonSlHit() {
+        // LONG entry=50000, ATR=1000 → SL=48500 (1.5×ATR) — price drops to SL
+        Trade t = svc.openTrade(100, Trade.Direction.LONG, 10,
+                50000, 0.001, 1000, 0, 0, null, null, null, null);
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 48500.0);
+
+        assertEquals(Trade.Status.CLOSED, t.status);
+        assertEquals("SL_HIT", t.closeReason);
+        assertNotNull(t.closedAt);
+    }
+
+    @Test
+    @Transactional
+    void autoClose_long_liquidated_closesWithReasonLiquidation() {
+        // LONG entry=50000, leverage=10 → liq≈45000
+        // Use custom SL=0 (no SL) so only liquidation triggers
+        Trade t = svc.openTrade(100, Trade.Direction.LONG, 10,
+                50000, 0.001, 1000, 0, 0, null, null, null, null);
+        t.sl = 0; // remove SL so liquidation fires
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 44000.0);
+
+        assertEquals(Trade.Status.CLOSED, t.status);
+        assertEquals("LIQUIDATION", t.closeReason);
+    }
+
+    @Test
+    @Transactional
+    void autoClose_short_tpHit_closesWithReasonTpHit() {
+        // SHORT entry=50000, ATR=1000 → TP1=48500 (1.5×ATR) — price drops to TP
+        Trade t = svc.openTrade(100, Trade.Direction.SHORT, 10,
+                50000, 0.001, 1000, 0, 0, null, null, null, null);
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 48500.0);
+
+        assertEquals(Trade.Status.CLOSED, t.status);
+        assertEquals("TP_HIT", t.closeReason);
+    }
+
+    @Test
+    @Transactional
+    void autoClose_short_slHit_closesWithReasonSlHit() {
+        // SHORT entry=50000, ATR=1000 → SL=51500 (1.5×ATR) — price rises to SL
+        Trade t = svc.openTrade(100, Trade.Direction.SHORT, 10,
+                50000, 0.001, 1000, 0, 0, null, null, null, null);
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 51500.0);
+
+        assertEquals(Trade.Status.CLOSED, t.status);
+        assertEquals("SL_HIT", t.closeReason);
+    }
+
+    @Test
+    @Transactional
+    void autoClose_short_liquidated_closesWithReasonLiquidation() {
+        // SHORT entry=50000, leverage=10 → liq≈55000
+        // Use custom SL=0 (no SL) so only liquidation triggers
+        Trade t = svc.openTrade(100, Trade.Direction.SHORT, 10,
+                50000, 0.001, 1000, 0, 0, null, null, null, null);
+        t.sl = 0; // remove SL so liquidation fires
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 56000.0);
+
+        assertEquals(Trade.Status.CLOSED, t.status);
+        assertEquals("LIQUIDATION", t.closeReason);
+    }
+
+    @Test
+    @Transactional
+    void autoClose_betweenSlAndTp_tradeStaysOpen() {
+        // LONG entry=50000, SL=49000, TP=51000 — price at 50500 (between)
+        Trade t = svc.openTrade(100, Trade.Direction.LONG, 10,
+                50000, 0.001, 1000, 0, 0, null, null, null, null);
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 50500.0);
+
+        assertEquals(Trade.Status.OPEN, t.status, "Trade between SL and TP should stay OPEN");
+        assertNull(t.closeReason);
+    }
+
+    @Test
+    @Transactional
+    void autoClose_real_notAutoClosedOnTpHit() {
+        // REAL trade: should NOT auto-close even if price passes TP
+        Trade t = svc.openTrade(100, Trade.Direction.LONG, 10,
+                50000, 0.001, 1000, 0, 0, "REAL", "Binance", "BTC/USDT", null);
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 51000.0);
+
+        assertEquals(Trade.Status.OPEN, t.status,
+                "REAL trades must NOT be auto-closed — user manages them in their broker");
+    }
+
+    @Test
+    @Transactional
+    void autoClose_real_notAutoClosedOnSlHit() {
+        // REAL trade: should NOT auto-close on SL either
+        Trade t = svc.openTrade(100, Trade.Direction.LONG, 10,
+                50000, 0.001, 1000, 0, 0, "REAL", "Binance", "BTC/USDT", null);
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 49000.0);
+
+        assertEquals(Trade.Status.OPEN, t.status,
+                "REAL trades must NOT be auto-closed on SL");
+    }
+
+    @Test
+    @Transactional
+    void autoClose_pnl_computedAtExactTpPrice_notCurrentPrice() {
+        // LONG entry=50000, ATR=1000 → TP=51500 (1.5×ATR) — price overshoots to 52000
+        // P&L should be computed at TP (51500), not at 52000
+        double entry = 50000, amount = 100, tp = 51500;
+        int leverage = 10;
+        Trade t = svc.openTrade(amount, Trade.Direction.LONG, leverage,
+                entry, 0.0, 1000, 0, 0, null, null, null, null);
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 52000.0); // overshoots TP
+
+        assertEquals(Trade.Status.CLOSED, t.status);
+        assertEquals("TP_HIT", t.closeReason);
+        // Expected pnlUsd at tp=51500: 100 * (1500/50000) * 10 = 30$
+        double expectedPnl = amount * ((tp - entry) / entry) * leverage;
+        assertEquals(expectedPnl, t.pnlUsd, 0.01,
+                "P&L must be computed at exact TP price, not at the overshoot price");
+    }
+
+    @Test
+    @Transactional
+    void autoClose_pnl_computedAtExactSlPrice_notCurrentPrice() {
+        // LONG entry=50000, ATR=1000 → SL=48500 (1.5×ATR) — price gaps down to 48000
+        // P&L should be computed at SL (48500), not at 48000
+        double entry = 50000, amount = 100, sl = 48500;
+        int leverage = 10;
+        Trade t = svc.openTrade(amount, Trade.Direction.LONG, leverage,
+                entry, 0.0, 1000, 0, 0, null, null, null, null);
+        createdIds.add(t.id);
+
+        svc.updateTradesAtPrice(List.of(t), 48000.0); // gaps below SL
+
+        assertEquals(Trade.Status.CLOSED, t.status);
+        assertEquals("SL_HIT", t.closeReason);
+        // Expected pnlUsd at sl=48500: 100 * (-1500/50000) * 10 = -30$
+        double expectedPnl = amount * ((sl - entry) / entry) * leverage;
+        assertEquals(expectedPnl, t.pnlUsd, 0.01,
+                "P&L must be computed at exact SL price, not at the gap-down price");
+    }
+
 }

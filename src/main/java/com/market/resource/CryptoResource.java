@@ -4,12 +4,15 @@ import com.market.client.BinanceClient;
 import com.market.model.BitcoinSignal;
 import com.market.model.CandleDTO;
 import com.market.service.CryptoAnalysisService;
+import com.market.service.WhatsAppAlertService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Path("/api/crypto")
@@ -17,6 +20,7 @@ import java.util.stream.Collectors;
 public class CryptoResource {
 
     @Inject CryptoAnalysisService cryptoService;
+    @Inject WhatsAppAlertService  whatsAppAlertService;
 
     @Inject @RestClient BinanceClient binanceClient;
 
@@ -44,6 +48,34 @@ public class CryptoResource {
             double volume = Double.parseDouble(k.get(5).toString());
             return new CandleDTO(time, open, high, low, close, volume);
         }).collect(Collectors.toList());
+    }
+
+    /**
+     * Test endpoint — sends a WhatsApp alert with the current signal immediately,
+     * bypassing the conviction/cooldown filters.
+     * Call: POST /api/crypto/btc/whatsapp-test
+     */
+    @POST
+    @Path("/btc/whatsapp-test")
+    public Response testWhatsApp() {
+        if (!whatsAppAlertService.isEnabled()) {
+            return Response.status(Response.Status.SERVICE_UNAVAILABLE)
+                    .entity(Map.of("error",
+                        "WhatsApp not configured. Set market.whatsapp.phone and market.whatsapp.apikey."))
+                    .build();
+        }
+        BitcoinSignal signal = cryptoService.getSignal();
+        if (signal.error != null) {
+            return Response.serverError().entity(Map.of("error", signal.error)).build();
+        }
+        // Force-send bypassing filters
+        whatsAppAlertService.sendTest(signal);
+        return Response.ok(Map.of(
+            "status",     "sent",
+            "direction",  signal.direction,
+            "confidence", signal.confidence,
+            "price",      signal.currentPrice
+        )).build();
     }
 }
 

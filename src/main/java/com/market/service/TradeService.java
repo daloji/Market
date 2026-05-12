@@ -41,10 +41,10 @@ public class TradeService {
         trade.leverage   = leverage;
         trade.entryPrice = entryPrice;
         trade.feeRate    = feeRate;
-        trade.sl  = customSl > 0 ? customSl : entryPrice - sign * atr;
-        trade.tp1 = customTp > 0 ? customTp : entryPrice + sign * atr;
-        trade.tp2 = entryPrice + sign * 2 * atr;
-        trade.tp3 = entryPrice + sign * 3 * atr;
+        trade.sl  = customSl > 0 ? customSl : entryPrice - sign * 1.5 * atr;
+        trade.tp1 = customTp > 0 ? customTp : entryPrice + sign * 1.5 * atr;
+        trade.tp2 = entryPrice + sign * 3.0 * atr;
+        trade.tp3 = entryPrice + sign * 4.5 * atr;
         trade.liq = entryPrice * liqFactor;
         trade.openedAt   = Instant.now();
         trade.status     = Trade.Status.OPEN;
@@ -108,10 +108,18 @@ public class TradeService {
             return;
         }
 
-        for (Trade t : open) {
-            updateTrade(t, currentPrice);
+        if (currentPrice <= 0) {
+            LOG.warn("Skipping trade update — invalid BTC price: " + currentPrice);
+            return;
         }
+
+        updateTradesAtPrice(open, currentPrice);
         LOG.debugf("Updated %d open trade(s) — BTC=%.2f", (Object) open.size(), currentPrice);
+    }
+
+    /** Package-private: update a batch of trades at a given price (also used by tests). */
+    void updateTradesAtPrice(List<Trade> trades, double price) {
+        for (Trade t : trades) updateTrade(t, price);
     }
 
     // ─── Private helpers ───────────────────────────────────────────────────────
@@ -138,9 +146,12 @@ public class TradeService {
             boolean tpHit = t.direction == Trade.Direction.LONG
                     ? current >= t.tp1 : current <= t.tp1;
             if (tpHit) {
-                t.status = Trade.Status.CLOSED; t.closedAt = Instant.now();
+                computePnl(t, t.tp1); // P&L at exact TP price (no slippage in simulation)
+                t.status      = Trade.Status.CLOSED;
+                t.closedAt    = Instant.now();
                 t.closeReason = "TP_HIT";
-                LOG.infof("Trade %d TP hit at %.2f (tp=%.2f)", t.id, current, t.tp1);
+                LOG.infof("Trade %d TP hit at %.2f (tp=%.2f) pnlNet=%.2f",
+                        t.id, current, t.tp1, t.pnlNet);
                 return;
             }
         }
@@ -148,19 +159,24 @@ public class TradeService {
             boolean slHit = t.direction == Trade.Direction.LONG
                     ? current <= t.sl : current >= t.sl;
             if (slHit) {
-                t.status = Trade.Status.CLOSED; t.closedAt = Instant.now();
+                computePnl(t, t.sl); // P&L at exact SL price
+                t.status      = Trade.Status.CLOSED;
+                t.closedAt    = Instant.now();
                 t.closeReason = "SL_HIT";
-                LOG.warnf("Trade %d SL hit at %.2f (sl=%.2f)", t.id, current, t.sl);
+                LOG.warnf("Trade %d SL hit at %.2f (sl=%.2f) pnlNet=%.2f",
+                        t.id, current, t.sl, t.pnlNet);
                 return;
             }
         }
         boolean liquidated = t.direction == Trade.Direction.LONG
                 ? current <= t.liq : current >= t.liq;
         if (liquidated) {
-            t.status = Trade.Status.CLOSED; t.closedAt = Instant.now();
+            computePnl(t, t.liq); // P&L at exact liquidation price
+            t.status      = Trade.Status.CLOSED;
+            t.closedAt    = Instant.now();
             t.closeReason = "LIQUIDATION";
-            LOG.warnf("Trade %d liquidated at %.2f", t.id, current);
+            LOG.warnf("Trade %d liquidated at %.2f pnlNet=%.2f", t.id, current, t.pnlNet);
         }
     }
-}
 
+}
