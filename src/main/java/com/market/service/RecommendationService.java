@@ -103,6 +103,16 @@ public class RecommendationService {
         rec.signal       = signal;
         rec.score        = score;
         rec.currentPrice = round2(currentPrice);
+
+        // Daily change: compare last two quotes
+        if (closes.size() >= 2) {
+            double prevClose = closes.get(closes.size() - 2);
+            rec.previousClose = round2(prevClose);
+            if (prevClose != 0) {
+                rec.dailyChangePercent = round2((currentPrice - prevClose) / prevClose * 100);
+            }
+        }
+
         rec.rsi          = round2(rsi);
         rec.sma20        = round2(sma20);
         rec.sma50        = round2(sma50);

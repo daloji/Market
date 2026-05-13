@@ -182,7 +182,12 @@ function updateSignalCard(s) {
 
 // ── Levels table ───────────────────────────────────────────────────────────────
 function updateLevels(s) {
-  const isLong = s.direction === 'LONG';
+  const cur   = s.currentPrice || s.entryPrice;
+  const lev   = s.leverage || 10;
+
+  // Update levier label in header
+  const levLabel = document.getElementById('lev-label');
+  if (levLabel) levLabel.textContent = lev;
 
   setText('entry-price', '$' + fmt(s.entryPrice));
   setText('tp1',         '$' + fmt(s.tp1));
@@ -191,12 +196,29 @@ function updateLevels(s) {
   setText('stop-loss',   '$' + fmt(s.stopLoss));
   setText('liquidation', '$' + fmt(s.liquidationPrice));
 
+  // Distance from current price (independent of leverage)
+  setDist('tp1-dist', s.tp1,              cur);
+  setDist('tp2-dist', s.tp2,              cur);
+  setDist('tp3-dist', s.tp3,              cur);
+  setDist('sl-dist',  s.stopLoss,         cur);
+  setDist('liq-dist', s.liquidationPrice, cur);
+
   setPnl('tp1-pnl', s.tp1PnlPct);
   setPnl('tp2-pnl', s.tp2PnlPct);
   setPnl('tp3-pnl', s.tp3PnlPct);
   setPnl('sl-pnl',  s.slPnlPct);
 
   setText('atr-val', fmt2(s.atr) + ' $');
+}
+
+/** Distance % entre prix courant et un niveau cible */
+function setDist(id, target, current) {
+  const el = document.getElementById(id);
+  if (!el || !target || !current) return;
+  const pct  = (target - current) / current * 100;
+  const sign = pct >= 0 ? '+' : '';
+  el.textContent = sign + pct.toFixed(2) + '%';
+  el.className   = pct >= 0 ? 'green' : 'red';
 }
 
 function setPnl(id, pct) {
@@ -356,6 +378,11 @@ function renderTradeProposals(s) {
   setText('l-tp3',   '$' + fmt(lLevels.tp3));
   setText('l-sl',    '$' + fmt(lLevels.sl));
   setText('l-liq',   '$' + fmt(lLevels.liq));
+  setDist('l-tp1-dist', lLevels.tp1,  entry);
+  setDist('l-tp2-dist', lLevels.tp2,  entry);
+  setDist('l-tp3-dist', lLevels.tp3,  entry);
+  setDist('l-sl-dist',  lLevels.sl,   entry);
+  setDist('l-liq-dist', lLevels.liq,  entry);
   setText('l-tp1-pnl', fmtPnl(entry, lLevels.tp1, 'LONG'));
   setText('l-tp2-pnl', fmtPnl(entry, lLevels.tp2, 'LONG'));
   setText('l-tp3-pnl', fmtPnl(entry, lLevels.tp3, 'LONG'));
@@ -375,10 +402,16 @@ function renderTradeProposals(s) {
   setText('s-tp3',   '$' + fmt(sLevels.tp3));
   setText('s-sl',    '$' + fmt(sLevels.sl));
   setText('s-liq',   '$' + fmt(sLevels.liq));
+  setDist('s-tp1-dist', sLevels.tp1,  entry);
+  setDist('s-tp2-dist', sLevels.tp2,  entry);
+  setDist('s-tp3-dist', sLevels.tp3,  entry);
+  setDist('s-sl-dist',  sLevels.sl,   entry);
+  setDist('s-liq-dist', sLevels.liq,  entry);
   setText('s-tp1-pnl', fmtPnl(entry, sLevels.tp1, 'SHORT'));
   setText('s-tp2-pnl', fmtPnl(entry, sLevels.tp2, 'SHORT'));
   setText('s-tp3-pnl', fmtPnl(entry, sLevels.tp3, 'SHORT'));
   setText('s-sl-pnl',  fmtPnl(entry, sLevels.sl,  'SHORT'));
+
 
   // ── Badges & highlights ───────────────────────────────────────────────────
   const longCard  = document.getElementById('proposal-long');

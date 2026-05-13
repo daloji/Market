@@ -44,7 +44,11 @@
     <!-- Direction badge -->
     <div class="signal-card" id="signal-card">
       <div class="signal-direction" id="signal-direction">—</div>
-      <div class="signal-confidence">
+      <div class="signal-confidence" data-tooltip="Score composite 0–100 basé sur :
+RSI, MACD, EMA, Bollinger, ADX, Stochastique, OBV
+≥ 70 → signal fort
+50–69 → signal modéré
+< 50 → signal faible">
         Confiance : <strong id="signal-confidence">—</strong>
       </div>
       <div class="signal-reasoning" id="signal-reasoning">Chargement…</div>
@@ -58,43 +62,68 @@
           <tr>
             <th>Niveau</th>
             <th>Prix BTC</th>
-            <th>P&amp;L position x10</th>
+            <th data-tooltip="Distance entre le prix actuel et ce niveau
+= (cible − prix) / prix × 100
+Indépendant du levier">Distance</th>
+            <th data-tooltip="Profit ou Perte en % de la marge engagée
+= Distance × levier
+Ex : +5% distance × ×10 = +50% P&L">P&amp;L ×<span id="lev-label">10</span></th>
           </tr>
         </thead>
         <tbody>
           <tr class="row-tp">
-            <td>🎯 TP3</td>
+            <td data-tooltip="Take Profit 3 — Objectif maximum
+Entrée + 3× ATR
+Ratio Risque/Récompense 1:3">🎯 TP3</td>
             <td id="tp3">—</td>
+            <td id="tp3-dist" class="pnl green">—</td>
             <td id="tp3-pnl" class="pnl green">—</td>
           </tr>
           <tr class="row-tp">
-            <td>🎯 TP2</td>
+            <td data-tooltip="Take Profit 2 — Objectif intermédiaire
+Entrée + 2× ATR
+Ratio Risque/Récompense 1:2">🎯 TP2</td>
             <td id="tp2">—</td>
+            <td id="tp2-dist" class="pnl green">—</td>
             <td id="tp2-pnl" class="pnl green">—</td>
           </tr>
           <tr class="row-tp">
-            <td>🎯 TP1</td>
+            <td data-tooltip="Take Profit 1 — Premier objectif
+Entrée + 1× ATR
+Ratio Risque/Récompense 1:1">🎯 TP1</td>
             <td id="tp1">—</td>
+            <td id="tp1-dist" class="pnl green">—</td>
             <td id="tp1-pnl" class="pnl green">—</td>
           </tr>
           <tr class="row-entry">
             <td>📌 Entrée</td>
             <td id="entry-price">—</td>
+            <td class="muted">0%</td>
             <td class="muted">—</td>
           </tr>
           <tr class="row-sl">
-            <td>🛑 Stop Loss</td>
+            <td data-tooltip="Stop Loss — Limite de perte acceptée
+Entrée ± 1.5× ATR
+Déclenché automatiquement si atteint">🛑 Stop Loss</td>
             <td id="stop-loss">—</td>
+            <td id="sl-dist" class="pnl red">—</td>
             <td id="sl-pnl" class="pnl red">—</td>
           </tr>
           <tr class="row-liq">
-            <td>💀 Liquidation</td>
+            <td data-tooltip="Niveau de liquidation forcée
+≈ Entrée ± (100% / levier)
+En dessous (LONG) ou au-dessus (SHORT)
+→ perte totale de la marge">💀 Liquidation</td>
             <td id="liquidation">—</td>
-            <td class="red">≈ -100%</td>
+            <td id="liq-dist" class="pnl red">—</td>
+            <td class="red">≈ −100%</td>
           </tr>
         </tbody>
       </table>
-      <div class="atr-info">ATR 1h : <strong id="atr-val">—</strong> &nbsp;|&nbsp; Timestamp : <span id="ts">—</span></div>
+      <div class="atr-info"><span data-tooltip="Average True Range (1h)
+Mesure la volatilité moyenne sur 14 bougies.
+Utilisé pour calculer TP1/TP2/TP3 et le Stop Loss.
+ATR élevé → marché volatile → niveaux plus larges">ATR 1h</span> : <strong id="atr-val">—</strong> &nbsp;|&nbsp; Timestamp : <span id="ts">—</span></div>
     </div>
 
   </section>
@@ -121,12 +150,12 @@
         <div class="prop-reason" id="long-reason">—</div>
         <table class="prop-table">
           <tbody>
-            <tr class="prop-tp"><td>🎯 TP3</td><td id="l-tp3">—</td><td id="l-tp3-pnl" class="green">—</td><td class="rr muted">R/R 1:3</td></tr>
-            <tr class="prop-tp"><td>🎯 TP2</td><td id="l-tp2">—</td><td id="l-tp2-pnl" class="green">—</td><td class="rr muted">R/R 1:2</td></tr>
-            <tr class="prop-tp"><td>🎯 TP1</td><td id="l-tp1">—</td><td id="l-tp1-pnl" class="green">—</td><td class="rr muted">R/R 1:1</td></tr>
-            <tr class="prop-entry"><td>📌 Entrée</td><td id="l-entry">—</td><td class="muted">—</td><td></td></tr>
-            <tr class="prop-sl"><td>🛑 Stop Loss</td><td id="l-sl">—</td><td id="l-sl-pnl" class="red">—</td><td></td></tr>
-            <tr class="prop-liq"><td>💀 Liquidation</td><td id="l-liq">—</td><td class="red">≈ -100%</td><td></td></tr>
+            <tr class="prop-tp"><td>🎯 TP3</td><td id="l-tp3">—</td><td id="l-tp3-dist" class="green">—</td><td id="l-tp3-pnl" class="green">—</td><td class="rr muted">1:3</td></tr>
+            <tr class="prop-tp"><td>🎯 TP2</td><td id="l-tp2">—</td><td id="l-tp2-dist" class="green">—</td><td id="l-tp2-pnl" class="green">—</td><td class="rr muted">1:2</td></tr>
+            <tr class="prop-tp"><td>🎯 TP1</td><td id="l-tp1">—</td><td id="l-tp1-dist" class="green">—</td><td id="l-tp1-pnl" class="green">—</td><td class="rr muted">1:1</td></tr>
+            <tr class="prop-entry"><td>📌 Entrée</td><td id="l-entry">—</td><td class="muted">0%</td><td class="muted">—</td><td></td></tr>
+            <tr class="prop-sl"><td>🛑 Stop Loss</td><td id="l-sl">—</td><td id="l-sl-dist" class="red">—</td><td id="l-sl-pnl" class="red">—</td><td></td></tr>
+            <tr class="prop-liq"><td>💀 Liquidation</td><td id="l-liq">—</td><td id="l-liq-dist" class="red">—</td><td class="red">≈ −100%</td><td></td></tr>
           </tbody>
         </table>
       </div>
@@ -140,12 +169,12 @@
         <div class="prop-reason" id="short-reason">—</div>
         <table class="prop-table">
           <tbody>
-            <tr class="prop-tp"><td>🎯 TP3</td><td id="s-tp3">—</td><td id="s-tp3-pnl" class="green">—</td><td class="rr muted">R/R 1:3</td></tr>
-            <tr class="prop-tp"><td>🎯 TP2</td><td id="s-tp2">—</td><td id="s-tp2-pnl" class="green">—</td><td class="rr muted">R/R 1:2</td></tr>
-            <tr class="prop-tp"><td>🎯 TP1</td><td id="s-tp1">—</td><td id="s-tp1-pnl" class="green">—</td><td class="rr muted">R/R 1:1</td></tr>
-            <tr class="prop-entry"><td>📌 Entrée</td><td id="s-entry">—</td><td class="muted">—</td><td></td></tr>
-            <tr class="prop-sl"><td>🛑 Stop Loss</td><td id="s-sl">—</td><td id="s-sl-pnl" class="red">—</td><td></td></tr>
-            <tr class="prop-liq"><td>💀 Liquidation</td><td id="s-liq">—</td><td class="red">≈ -100%</td><td></td></tr>
+            <tr class="prop-tp"><td>🎯 TP3</td><td id="s-tp3">—</td><td id="s-tp3-dist" class="green">—</td><td id="s-tp3-pnl" class="green">—</td><td class="rr muted">1:3</td></tr>
+            <tr class="prop-tp"><td>🎯 TP2</td><td id="s-tp2">—</td><td id="s-tp2-dist" class="green">—</td><td id="s-tp2-pnl" class="green">—</td><td class="rr muted">1:2</td></tr>
+            <tr class="prop-tp"><td>🎯 TP1</td><td id="s-tp1">—</td><td id="s-tp1-dist" class="green">—</td><td id="s-tp1-pnl" class="green">—</td><td class="rr muted">1:1</td></tr>
+            <tr class="prop-entry"><td>📌 Entrée</td><td id="s-entry">—</td><td class="muted">0%</td><td class="muted">—</td><td></td></tr>
+            <tr class="prop-sl"><td>🛑 Stop Loss</td><td id="s-sl">—</td><td id="s-sl-dist" class="red">—</td><td id="s-sl-pnl" class="red">—</td><td></td></tr>
+            <tr class="prop-liq"><td>💀 Liquidation</td><td id="s-liq">—</td><td id="s-liq-dist" class="red">—</td><td class="red">≈ −100%</td><td></td></tr>
           </tbody>
         </table>
       </div>
@@ -171,7 +200,11 @@
 
     <!-- RSI gauge -->
     <div class="ind-card">
-      <div class="ind-title">RSI (14)</div>
+      <div class="ind-title" data-tooltip="Relative Strength Index (14 périodes)
+Mesure la force du momentum.
+< 30 → survente (signal BUY potentiel)
+> 70 → surachat (signal SELL potentiel)
+Entre 30 et 70 → zone neutre">RSI (14)</div>
       <div class="rsi-bar-bg">
         <div class="rsi-bar-fill" id="rsi-fill"></div>
         <div class="rsi-needle" id="rsi-needle"></div>
@@ -186,7 +219,12 @@
 
     <!-- EMA -->
     <div class="ind-card">
-      <div class="ind-title">EMA (9 / 21)</div>
+      <div class="ind-title" data-tooltip="Exponential Moving Averages
+EMA 9 = court terme (momentum rapide)
+EMA 21 = moyen terme
+EMA 9 > EMA 21 → tendance haussière
+EMA 9 < EMA 21 → tendance baissière
+Croisement = changement de direction">EMA (9 / 21)</div>
       <div class="ema-row">
         <span class="ema-lbl">EMA 9</span>
         <span class="ema-val green" id="ema9">—</span>
@@ -200,7 +238,13 @@
 
     <!-- MACD -->
     <div class="ind-card">
-      <div class="ind-title">MACD (12/26/9)</div>
+      <div class="ind-title" data-tooltip="Moving Average Convergence Divergence
+Ligne = EMA12 − EMA26
+Signal = EMA9 de la Ligne
+Histogramme = Ligne − Signal
+Histo > 0 → momentum haussier
+Histo < 0 → momentum baissier
+Croisement ligne/signal = signal fort">MACD (12/26/9)</div>
       <div class="macd-row"><span>Ligne</span>   <span id="macd-line">—</span></div>
       <div class="macd-row"><span>Signal</span>  <span id="macd-sig">—</span></div>
       <div class="macd-row"><span>Histogramme</span><span id="macd-hist" class="bold">—</span></div>
@@ -208,7 +252,12 @@
 
     <!-- Bollinger -->
     <div class="ind-card">
-      <div class="ind-title">Bandes de Bollinger (20)</div>
+      <div class="ind-title" data-tooltip="Bandes de Bollinger (20 périodes, ±2σ)
+Upper = SMA20 + 2 écarts-types
+Lower = SMA20 − 2 écarts-types
+Prix près du Lower → survente potentielle
+Prix près de l'Upper → surachat potentiel
+Bandes étroites → explosion de volatilité imminente">Bandes de Bollinger (20)</div>
       <div class="boll-row"><span class="red">Upper</span>   <span id="boll-upper">—</span></div>
       <div class="boll-row"><span class="muted">Mid</span>   <span id="boll-mid">—</span></div>
       <div class="boll-row"><span class="green">Lower</span> <span id="boll-lower">—</span></div>
@@ -221,7 +270,15 @@
 
     <!-- ADX -->
     <div class="ind-card">
-      <div class="ind-title">ADX (14) — Force de tendance</div>
+      <div class="ind-title" data-tooltip="Average Directional Index (14)
+Mesure la FORCE (pas la direction).
+< 15 → pas de tendance (range)
+15–25 → tendance faible
+25–35 → tendance modérée
+35–50 → tendance forte
+> 50 → tendance extrême
++DI > −DI → direction haussière
+−DI > +DI → direction baissière">ADX (14) — Force de tendance</div>
       <div class="rsi-bar-bg">
         <div class="rsi-needle" id="adx-needle"></div>
       </div>
@@ -241,7 +298,12 @@
 
     <!-- Stochastic -->
     <div class="ind-card">
-      <div class="ind-title">Stochastique (14, 3)</div>
+      <div class="ind-title" data-tooltip="Oscillateur Stochastique (14, 3)
+%K = position du prix dans son range récent
+%D = moyenne mobile de %K (signal)
+< 20 → survente (opportunité LONG)
+> 80 → surachat (opportunité SHORT)
+Croisement %K/%D = signal d'entrée">Stochastique (14, 3)</div>
       <div class="rsi-bar-bg">
         <div class="rsi-needle" id="stoch-needle"></div>
       </div>
@@ -261,7 +323,11 @@
 
     <!-- OBV -->
     <div class="ind-card">
-      <div class="ind-title">OBV — Pression volume</div>
+      <div class="ind-title" data-tooltip="On-Balance Volume
+Cumule le volume selon la direction du prix.
+OBV monte → acheteurs dominants (pression haussière)
+OBV baisse → vendeurs dominants (pression baissière)
+Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
       <div class="ind-value" id="obv-direction" style="font-size:1.5rem;margin:12px 0">—</div>
       <div id="obv-label" style="font-size:12px;color:var(--muted);text-align:center;margin-top:4px">—</div>
     </div>

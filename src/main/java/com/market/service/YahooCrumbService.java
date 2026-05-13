@@ -1,6 +1,7 @@
 package com.market.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.market.client.dto.YahooQuoteResponse;
 import com.market.client.dto.YahooQuoteSummaryResponse;
 import jakarta.annotation.PostConstruct;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -83,6 +84,41 @@ public class YahooCrumbService {
             resp = doFetch(symbol, c);
         }
         return resp;
+    }
+
+    /**
+     * Fetches basic fundamental data via /v7/finance/quote — no crumb or cookie needed.
+     * This endpoint is NOT blocked by Yahoo on datacenter IPs (OVH, AWS, etc.)
+     * unlike /v10/finance/quoteSummary which requires authentication.
+     *
+     * Available fields: trailingPE, forwardPE, priceToBook, beta, dividendYield,
+     *                   epsForward, 52w high/low, marketCap, targetMeanPrice.
+     */
+    public YahooQuoteResponse fetchQuoteData(String symbol) throws Exception {
+        String encoded = URLEncoder.encode(symbol, StandardCharsets.UTF_8);
+        for (String host : HOSTS) {
+            String url = host + "/v7/finance/quote?symbols=" + encoded
+                    + "&fields=trailingPE,forwardPE,priceToBook,bookValue,"
+                    + "epsTrailingTwelveMonths,epsForward,dividendYield,"
+                    + "trailingAnnualDividendYield,beta,fiftyTwoWeekHigh,fiftyTwoWeekLow,"
+                    + "regularMarketPrice,marketCap,targetMeanPrice,numberOfAnalystOpinions,"
+                    + "shortName,longName,sector,industry"
+                    + "&lang=en-US&region=US&formatted=false&corsDomain=finance.yahoo.com";
+            try {
+                HttpResponse<String> r = get(url, null);
+                if (r.statusCode() == 200 && r.body() != null && !r.body().isBlank()) {
+                    YahooQuoteResponse resp = objectMapper.readValue(r.body(), YahooQuoteResponse.class);
+                    if (resp.firstResult() != null) {
+                        LOG.debugf("fetchQuoteData ok for %s via %s", symbol, host);
+                        return resp;
+                    }
+                }
+                LOG.warnf("fetchQuoteData HTTP %d from %s for %s", r.statusCode(), host, symbol);
+            } catch (Exception e) {
+                LOG.warnf("fetchQuoteData failed on %s for %s: %s", host, symbol, e.getMessage());
+            }
+        }
+        return null;
     }
 
     /** Quick connectivity test — returns human-readable multi-line report. */
