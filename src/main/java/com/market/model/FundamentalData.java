@@ -66,6 +66,9 @@ public class FundamentalData extends PanacheEntity {
     @Column(length = 1000)
     public String reasons;
 
+    /** Source of the data: "YAHOO" or "ALPHAVANTAGE" (null = legacy rows). */
+    public String dataSource;
+
     // ── Finders ──────────────────────────────────────────────────────────────
     public static FundamentalData findLatestBySymbol(String symbol) {
         return find("symbol = ?1 order by fetchedAt desc", symbol.toUpperCase())

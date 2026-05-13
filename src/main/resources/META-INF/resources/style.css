@@ -139,7 +139,10 @@ main { padding: 20px 24px; }
 .signal-badge.HOLD { background: var(--hold-bg); color: var(--hold); }
 .signal-badge.SELL { background: var(--sell-bg); color: var(--sell); }
 
-.card-price { font-size: 22px; font-weight: 700; margin-bottom: 12px; }
+.card-price { font-size: 22px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.daily-change { font-size: 13px; font-weight: 600; }
+.change-up   { color: var(--buy); }
+.change-down { color: var(--sell); }
 
 /* Score bar */
 .score-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -487,3 +490,65 @@ main { padding: 20px 24px; }
 .trend-bear-strong { background: #2e0d0d; color: #f87171; border: 1px solid #ef4444; }
 .trend-bear        { background: #3a1010; color: #fca5a5; }
 .trend-neutral     { background: #1e2130; color: #94a3b8; }
+
+.adx-badge {
+  display: inline-block;
+  font-size: .70rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  cursor: default;
+}
+.adx-range    { background: #1e2130; color: #64748b; border: 1px dashed #475569; }
+.adx-weak     { background: #1e2a1e; color: #94a3b8; }
+.adx-moderate { background: #1a2e3a; color: #7dd3fc; border: 1px solid #0284c7; }
+.adx-strong   { background: #2a1e0a; color: #fb923c; border: 1px solid #ea580c; }
+.adx-extreme  { background: #2e0a0a; color: #f87171; border: 1px solid #dc2626; }
+
+/* ── Tooltip générique ────────────────────────────────────────────── */
+[data-tooltip] {
+  position: relative;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1e2535;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: .72rem;
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: pre-line;
+  width: max-content;
+  max-width: 220px;
+  pointer-events: none;
+  z-index: 999;
+  box-shadow: 0 4px 12px rgba(0,0,0,.5);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s, visibility .15s;
+}
+[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: #334155;
+  pointer-events: none;
+  z-index: 999;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s, visibility .15s;
+}
+[data-tooltip]:hover::after,
+[data-tooltip]:hover::before {
+  opacity: 1;
+  visibility: visible;
+}

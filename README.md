@@ -37,14 +37,20 @@ Application **Quarkus 3.8** de surveillance boursière qui récupère les donné
 |-----|-------------|
 | http://localhost:8080 | Dashboard principal |
 | http://localhost:8080/bitcoin.html | Simulateur Bitcoin |
+| http://localhost:8080/trade-history.html | Historique des trades BTC |
+| http://localhost:8080/diag.html | Page de diagnostic |
 | http://localhost:8080/swagger-ui | Documentation API interactive |
 | http://localhost:8025 | Mailhog (emails de dev) |
 
 ### Lancer les tests
 ```bash
-./mvnw test                                          # tous les tests
-./mvnw test -Dtest=StockResourceTest                 # une classe
-./mvnw test -Dtest=StockResourceTest#testAddStock    # une méthode
+./mvnw test                                                          # tous les tests
+./mvnw test -Dtest=StockResourceTest                                 # une classe
+./mvnw test -Dtest=StockResourceTest#testAddStock                    # une méthode
+./mvnw test -Dtest=RecommendationResourceTest                        # recommandations
+./mvnw test -Dtest=TradeResourceTest                                 # trades
+./mvnw test -Dtest=TechnicalAnalysisServiceTest                      # calcul indicateurs
+./mvnw test -Dtest=TradeServiceTest                                  # logique de trading
 ```
 
 ---
@@ -256,8 +262,9 @@ Chaque carte affiche :
 | Méthode | Endpoint | Description |
 |---------|----------|-------------|
 | `GET` | `/api/fundamentals` | Données fondamentales en cache pour tous les stocks |
-| `GET` | `/api/stocks/{symbol}/fundamental` | Fetch/cache pour un stock (déclenche Yahoo si besoin) |
-| `GET` | `/api/stocks/{symbol}/fundamental/cached` | Lecture cache uniquement (pas de fetch) |
+| `GET` | `/api/fundamentals/health` | Santé du service fondamental (quota, cache) |
+| `GET` | `/api/fundamentals/{symbol}` | Fetch/cache pour un stock (déclenche Yahoo si besoin) |
+| `GET` | `/api/fundamentals/{symbol}/cached` | Lecture cache uniquement (pas de fetch) |
 
 ### Crypto
 
@@ -265,16 +272,27 @@ Chaque carte affiche :
 |---------|----------|-------------|
 | `GET` | `/api/crypto/btc/signal` | Signal intraday BTC avec TP1/TP2/TP3 et SL |
 | `GET` | `/api/crypto/btc/candles?interval=1h&limit=100` | Bougies brutes Binance |
+| `POST` | `/api/crypto/btc/whatsapp-test` | Envoie un message WhatsApp de test via CallMeBot |
 
-### Trades (simulateur)
+### Indices de marché
 
 | Méthode | Endpoint | Description |
 |---------|----------|-------------|
-| `POST` | `/api/trades` | Ouvrir un trade `{amount, direction, leverage, entryPrice}` |
-| `GET` | `/api/trades` | Tous les trades |
-| `GET` | `/api/trades/active` | Trades ouverts |
-| `GET` | `/api/trades/{id}` | Un trade |
-| `DELETE` | `/api/trades/{id}` | Clôturer un trade |
+| `GET` | `/api/indices/{symbol}` | Données temps réel d'un indice (ex: `^FCHI` pour CAC 40) |
+
+### Trades (simulateur & réels)
+
+| Méthode | Endpoint | Description |
+|---------|----------|-------------|
+| `POST` | `/api/trades` | Ouvrir un trade simulé `{amount, direction, leverage, entryPrice, …}` |
+| `GET` | `/api/trades/active` | Trades simulés ouverts |
+| `GET` | `/api/trades/history` | Trades simulés clôturés |
+| `POST` | `/api/trades/real` | Ouvrir un trade réel |
+| `GET` | `/api/trades/real/active` | Trades réels ouverts |
+| `GET` | `/api/trades/real/history` | Trades réels clôturés |
+| `GET` | `/api/trades/all/history` | Tous les trades clôturés (simulés + réels) |
+| `GET` | `/api/trades/{id}` | Un trade par id |
+| `DELETE` | `/api/trades/{id}` | Clôturer un trade (`?reason=…&closePrice=…`) |
 
 ---
 
@@ -310,6 +328,9 @@ Fichier : `src/main/resources/application.properties`
 | `quarkus.mailer.mock` | `true` | Emails simulés en dev |
 | `market.alert.email` | _(vide)_ | Destinataire des alertes BUY (laisser vide pour désactiver) |
 | `market.datasource.alphavantage.api-key` | _(clé free tier)_ | Fallback données US |
+| `market.whatsapp.phone` | _(vide)_ | Numéro WhatsApp sans `+` (ex: `33612345678`) |
+| `market.whatsapp.apikey` | _(vide)_ | Clé API CallMeBot (voir ci-dessous) |
+| `market.whatsapp.min-confidence` | `70` | Seuil de confiance minimum pour déclencher une alerte WhatsApp |
 
 ### Profils
 
@@ -328,6 +349,21 @@ quarkus.mailer.host=localhost
 quarkus.mailer.port=1025        # Mailhog
 market.alert.email=ton@email.com
 ```
+
+### Activer les alertes WhatsApp BTC (CallMeBot)
+
+1. Ajouter le numéro `+34 644 59 30 06` dans vos contacts WhatsApp
+2. Lui envoyer le message : `I allow callmebot to send me messages`
+3. Récupérer la clé API reçue en réponse
+4. Configurer dans `application.properties` :
+
+```properties
+market.whatsapp.phone=33612345678   # code pays sans +
+market.whatsapp.apikey=VOTRE_CLE
+market.whatsapp.min-confidence=70   # optionnel, défaut : 70
+```
+
+> Les alertes ne se déclenchent que sur les transitions LONG/SHORT (pas WAIT) et respectent un cooldown de 5 minutes.
 
 ---
 
@@ -383,12 +419,13 @@ market/
     │   │   │   ├── FundamentalData.java     # Ratios fondamentaux + verdict
     │   │   │   ├── ValuationVerdict.java    # UNDERVALUED / FAIRLY_VALUED / OVERVALUED
     │   │   │   ├── RecommendationSignal.java# BUY / HOLD / SELL
-    │   │   │   ├── Trade.java               # Trade simulé BTC
+    │   │   │   ├── Trade.java               # Trade simulé ou réel BTC
     │   │   │   ├── BitcoinSignal.java       # Signal intraday BTC
     │   │   │   └── CandleDTO.java           # Bougie OHLCV
     │   │   ├── provider/                    # Abstraction multi-sources
     │   │   │   ├── StockDataProvider.java   # Interface commune
     │   │   │   ├── StockDataAggregator.java # Cascade Yahoo→TwelveData→Alpha
+    │   │   │   ├── DailyQuote.java          # DTO OHLCV normalisé source-agnostique
     │   │   │   ├── YahooFinanceProvider.java
     │   │   │   ├── TwelveDataProvider.java
     │   │   │   └── AlphaVantageProvider.java
@@ -399,8 +436,9 @@ market/
     │   │   │   ├── FundamentalAnalysisService.java # Scoring fondamental + cache 3 niveaux
     │   │   │   ├── YahooCrumbService.java          # Cookie + crumb Yahoo Finance
     │   │   │   ├── CryptoAnalysisService.java      # Signal BTC intraday
-    │   │   │   ├── TradeService.java                # Simulation trades levierés
+    │   │   │   ├── TradeService.java                # Simulation et trades réels levierés
     │   │   │   ├── AlertService.java                # Email sur transition → BUY
+    │   │   │   ├── WhatsAppAlertService.java        # WhatsApp via CallMeBot sur signal BTC
     │   │   │   └── DataInitializer.java             # Seed + analyse au démarrage
     │   │   ├── scheduler/
     │   │   │   └── MarketScheduler.java    # @Scheduled : marché 5min, BTC 15s, fond. 8h05
@@ -419,10 +457,18 @@ market/
     │           ├── app.js                  # Fetch, rendu cards, Chart.js, filtres
     │           ├── bitcoin.html            # Simulateur BTC
     │           ├── bitcoin.js
-    │           └── bitcoin.css
+    │           ├── bitcoin.css
+    │           ├── trade-history.html      # Historique des trades BTC
+    │           └── diag.html              # Page de diagnostic des API
     └── test/
         └── java/com/market/
-            └── StockResourceTest.java
+            ├── resource/
+            │   ├── StockResourceTest.java
+            │   ├── RecommendationResourceTest.java
+            │   └── TradeResourceTest.java
+            └── service/
+                ├── TechnicalAnalysisServiceTest.java
+                └── TradeServiceTest.java
 ```
 
 ---

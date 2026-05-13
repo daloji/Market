@@ -125,12 +125,12 @@ function buildCard(rec) {
   const trendBear = (rec.currentPrice < rec.sma20 ? 1 : 0)
                   + (rec.sma20 < rec.sma50 ? 1 : 0)
                   + (rec.macdHistogram < 0 ? 1 : 0);
-  let trendLabel, trendClass;
-  if (trendBull === 3)      { trendLabel = '📈 Haussière forte';  trendClass = 'trend-bull-strong'; }
-  else if (trendBull === 2) { trendLabel = '↗ Haussière';         trendClass = 'trend-bull'; }
-  else if (trendBear === 3) { trendLabel = '📉 Baissière forte';  trendClass = 'trend-bear-strong'; }
-  else if (trendBear === 2) { trendLabel = '↘ Baissière';         trendClass = 'trend-bear'; }
-  else                      { trendLabel = '➡ Neutre';            trendClass = 'trend-neutral'; }
+  let trendLabel, trendClass, trendTip;
+  if (trendBull === 3)      { trendLabel = '📈 Haussière forte';  trendClass = 'trend-bull-strong'; trendTip = 'Prix > SMA20 > SMA50\nMACD positif\n3/3 signaux haussiers'; }
+  else if (trendBull === 2) { trendLabel = '↗ Haussière';         trendClass = 'trend-bull';        trendTip = '2/3 signaux haussiers'; }
+  else if (trendBear === 3) { trendLabel = '📉 Baissière forte';  trendClass = 'trend-bear-strong'; trendTip = 'Prix < SMA20 < SMA50\nMACD négatif\n3/3 signaux baissiers'; }
+  else if (trendBear === 2) { trendLabel = '↘ Baissière';         trendClass = 'trend-bear';        trendTip = '2/3 signaux baissiers'; }
+  else                      { trendLabel = '➡ Neutre';            trendClass = 'trend-neutral';     trendTip = 'Signaux mixtes\nPas de direction claire'; }
 
   // Fundamental badge
   const fd = fundamentalMap[rec.symbol];
@@ -144,6 +144,29 @@ function buildCard(rec) {
     ? new Date(rec.timestamp).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
     : '—';
 
+  // ADX regime badge
+  let adxBadge = '';
+  if (rec.adx != null) {
+    const diInfo = rec.plusDI != null && rec.minusDI != null
+      ? `\n+DI ${fmt1(rec.plusDI)} / -DI ${fmt1(rec.minusDI)}`
+      : '';
+    if      (rec.adx < 15) adxBadge = `<span class="adx-badge adx-range"    data-tooltip="ADX ${fmt1(rec.adx)} — Marché en range\nSignaux techniques peu fiables${diInfo}">➡ Range (ADX ${fmt1(rec.adx)})</span>`;
+    else if (rec.adx < 25) adxBadge = `<span class="adx-badge adx-weak"     data-tooltip="ADX ${fmt1(rec.adx)} — Tendance faible ou émergente\nAttendre confirmation${diInfo}">〰 Tendance faible (ADX ${fmt1(rec.adx)})</span>`;
+    else if (rec.adx < 35) adxBadge = `<span class="adx-badge adx-moderate" data-tooltip="ADX ${fmt1(rec.adx)} — Tendance modérée confirmée\nSignaux fiables${diInfo}">📶 Tendance modérée (ADX ${fmt1(rec.adx)})</span>`;
+    else if (rec.adx < 50) adxBadge = `<span class="adx-badge adx-strong"   data-tooltip="ADX ${fmt1(rec.adx)} — Tendance forte\nMomentum solide${diInfo}">🔥 Tendance forte (ADX ${fmt1(rec.adx)})</span>`;
+    else                   adxBadge = `<span class="adx-badge adx-extreme"  data-tooltip="ADX ${fmt1(rec.adx)} — Tendance extrême\nPossible retournement imminent${diInfo}">💥 Tendance extrême (ADX ${fmt1(rec.adx)})</span>`;
+  }
+  let changeHtml = '';
+  if (rec.dailyChangePercent != null) {
+    const pct   = rec.dailyChangePercent;
+    const abs   = rec.previousClose != null ? rec.currentPrice - rec.previousClose : null;
+    const sign  = pct >= 0 ? '+' : '';
+    const cls   = pct >= 0 ? 'change-up' : 'change-down';
+    const arrow = pct >= 0 ? '▲' : '▼';
+    const absStr = abs != null ? ` (${sign}${formatPrice(abs)})` : '';
+    changeHtml = `<span class="daily-change ${cls}">${arrow} ${sign}${fmt2(pct)}%${absStr}</span>`;
+  }
+
   el.innerHTML = `
     <div class="card-header">
       <div>
@@ -155,10 +178,11 @@ function buildCard(rec) {
 
     <div class="card-badges-row">
       ${verdictBadge ? verdictBadge : ''}
-      <span class="trend-badge ${trendClass}">${trendLabel}</span>
+      <span class="trend-badge ${trendClass}" data-tooltip="${trendTip}">${trendLabel}</span>
+      ${adxBadge}
     </div>
 
-    <div class="card-price">${formatPrice(rec.currentPrice)}</div>
+    <div class="card-price">${formatPrice(rec.currentPrice)} ${changeHtml}</div>
 
     <div class="score-row">
       <div class="score-bar-bg">
@@ -170,24 +194,24 @@ function buildCard(rec) {
     <div class="metrics">
       <div class="metric">
         <div class="metric-label">RSI (14)</div>
-        <div class="metric-value ${rsiClass}">${fmt1(rec.rsi)}</div>
+        <div class="metric-value ${rsiClass}" data-tooltip="${rec.rsi < 30 ? 'Survente — signal potentiel BUY' : rec.rsi > 70 ? 'Surachat — signal potentiel SELL' : 'Zone neutre (30–70)'}">${fmt1(rec.rsi)}</div>
       </div>
       <div class="metric">
         <div class="metric-label">SMA20</div>
-        <div class="metric-value">${formatPrice(rec.sma20)}</div>
+        <div class="metric-value" data-tooltip="Moyenne mobile 20 jours\nSupport/résistance court terme">${formatPrice(rec.sma20)}</div>
       </div>
       <div class="metric">
         <div class="metric-label">MACD</div>
-        <div class="metric-value ${macdClass}">${macdArrow} ${fmt4(rec.macdHistogram)}</div>
+        <div class="metric-value ${macdClass}" data-tooltip="Histogramme MACD (12,26,9)\n${rec.macdHistogram > 0 ? 'Positif → momentum haussier' : rec.macdHistogram < 0 ? 'Négatif → momentum baissier' : 'Neutre'}">${macdArrow} ${fmt4(rec.macdHistogram)}</div>
       </div>
       <div class="metric">
         <div class="metric-label">SMA50</div>
-        <div class="metric-value">${formatPrice(rec.sma50)}</div>
+        <div class="metric-value" data-tooltip="Moyenne mobile 50 jours\nTendance long terme">${formatPrice(rec.sma50)}</div>
       </div>
     </div>
 
     <div class="bollinger-row">
-      <div class="bollinger-label">Bollinger — position <span class="${bollClass}">${bollPos}%</span></div>
+      <div class="bollinger-label" data-tooltip="Bandes de Bollinger (20j, ±2σ)\n0% = bande basse | 100% = bande haute\n${bollPos < 25 ? 'Prix proche de la bande basse → survente' : bollPos > 75 ? 'Prix proche de la bande haute → surachat' : 'Prix en zone centrale'}">Bollinger — position <span class="${bollClass}">${bollPos}%</span></div>
       <div class="bollinger-bar-bg">
         <div class="bollinger-marker" style="left:${bollPos}%"></div>
       </div>
@@ -469,6 +493,12 @@ async function openFundamental(symbol) {
         <a href="https://www.alphavantage.co/support/#api-key" target="_blank">Obtenir une clé gratuite</a></div>`;
       return;
     }
+    if (res.status === 404) {
+      // Serveur bloqué — tentative depuis le navigateur du client
+      body.innerHTML = '<div class="fund-loading">🌐 Serveur bloqué par Yahoo — tentative depuis votre navigateur…</div>';
+      await tryClientSideYahoo(symbol, body);
+      return;
+    }
     if (!res.ok) {
       body.innerHTML = `<div class="fund-error">❌ Données indisponibles — Yahoo Finance inaccessible depuis ce serveur.<br>
         <small>Vérifiez la connectivité : <a href="/api/fundamentals/health" target="_blank">/api/fundamentals/health</a></small></div>`;
@@ -477,15 +507,91 @@ async function openFundamental(symbol) {
     const fd = await res.json();
     const staleHeader = res.headers.get('X-Data-Stale');
     const staleDate   = res.headers.get('X-Data-FetchedAt');
-    let staleWarning  = '';
+    let banner = '';
     if (staleHeader === 'true' && staleDate) {
       const d = new Date(staleDate);
-      staleWarning = `<div class="fund-stale">⚠️ Données du ${d.toLocaleDateString('fr-FR')} (réseau Yahoo Finance indisponible depuis ce serveur)</div>`;
+      banner = `<div class="fund-stale">⚠️ Données du ${d.toLocaleDateString('fr-FR')} (Yahoo Finance indisponible — données en cache)</div>`;
+    } else if (fd.dataSource === 'YAHOO_QUOTE') {
+      banner = `<div class="fund-stale" style="color:#a3c9f0">ℹ️ Source : Yahoo Finance (données partielles — P/E, P/B, Beta, dividende)</div>`;
+    } else if (fd.dataSource === 'ALPHAVANTAGE') {
+      banner = `<div class="fund-stale" style="color:#7ec8e3">ℹ️ Source : Alpha Vantage (Yahoo Finance inaccessible depuis ce serveur)</div>`;
     }
-    body.innerHTML = staleWarning + buildFundamentalHTML(fd);
+    body.innerHTML = banner + buildFundamentalHTML(fd);
   } catch(e) {
     body.innerHTML = `<div class="fund-error">❌ Erreur: ${e.message}</div>`;
   }
+}
+
+/**
+ * Appel Yahoo Finance DEPUIS LE NAVIGATEUR du client (IP résidentielle — non bloquée).
+ * Si le CORS autorise la requête, on envoie les données au serveur pour stockage.
+ */
+async function tryClientSideYahoo(symbol, body) {
+  const fields = [
+    'trailingPE','forwardPE','priceToBook','beta',
+    'dividendYield','trailingAnnualDividendYield',
+    'fiftyTwoWeekHigh','fiftyTwoWeekLow',
+    'targetMeanPrice','sector','industry','marketCap',
+    'epsForward','epsTrailingTwelveMonths','numberOfAnalystOpinions'
+  ].join(',');
+  const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}&fields=${fields}`;
+
+  try {
+    const yRes = await fetch(yahooUrl, { headers: { 'Accept': 'application/json' } });
+    if (!yRes.ok) throw new Error(`Yahoo a répondu ${yRes.status}`);
+
+    const data = await yRes.json();
+    const raw  = data?.quoteResponse?.result?.[0];
+    if (!raw || (!raw.trailingPE && !raw.forwardPE && !raw.priceToBook)) {
+      body.innerHTML = `<div class="fund-error">📭 Aucune donnée fondamentale disponible pour <strong>${symbol}</strong> sur Yahoo Finance.</div>`;
+      return;
+    }
+
+    // Envoyer au serveur pour stockage + scoring
+    const storeRes = await fetch(`/api/fundamentals/${symbol}/from-client`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(raw)
+    });
+
+    if (storeRes.ok) {
+      const fd = await storeRes.json();
+      const banner = `<div class="fund-stale" style="color:#90ee90">🌐 Source : Yahoo Finance (navigateur client — IP résidentielle)</div>`;
+      body.innerHTML = banner + buildFundamentalHTML(fd);
+    } else {
+      // Affichage local si stockage serveur échoue
+      body.innerHTML =
+        `<div class="fund-stale" style="color:#90ee90">🌐 Source : Yahoo Finance (navigateur — non stocké)</div>` +
+        buildFundamentalFromRaw(raw, symbol);
+    }
+  } catch (e) {
+    // TypeError: Failed to fetch = CORS bloqué par le navigateur
+    const isCors = e instanceof TypeError;
+    body.innerHTML = isCors
+      ? `<div class="fund-error">🚫 <strong>CORS bloqué</strong> — Votre navigateur refuse d'accéder directement à Yahoo Finance.<br>
+          <small>Yahoo Finance ne permet pas les appels cross-origin depuis ce domaine.<br>
+          Solution : ajouter <code>ALPHAVANTAGE_KEY</code> dans la config serveur pour les actions US,
+          ou déployer le serveur sur une IP résidentielle (VPS avec IP dédiée, tunnel, etc.).</small></div>`
+      : `<div class="fund-error">❌ Erreur navigateur : ${e.message}</div>`;
+  }
+}
+
+/** Affichage local minimal des données brutes Yahoo (fallback si POST serveur échoue) */
+function buildFundamentalFromRaw(r, symbol) {
+  const fmtN = v => v != null ? Number(v).toFixed(2) : '—';
+  const fmtP = v => v != null ? (Number(v) * 100).toFixed(2) + '%' : '—';
+  return `<div class="fund-grid"><div class="fund-section">
+    <div class="fund-section-title">📊 Valorisation</div>
+    <div class="fund-row"><span>P/E (trailing)</span><strong>${fmtN(r.trailingPE)}</strong></div>
+    <div class="fund-row"><span>P/E (forward)</span><strong>${fmtN(r.forwardPE)}</strong></div>
+    <div class="fund-row"><span>Prix / Valeur comptable</span><strong>${fmtN(r.priceToBook)}</strong></div>
+    <div class="fund-row"><span>Beta</span><strong>${fmtN(r.beta)}</strong></div>
+    <div class="fund-row"><span>Dividende</span><strong>${fmtP(r.dividendYield || r.trailingAnnualDividendYield)}</strong></div>
+    <div class="fund-row"><span>52 sem. haut</span><strong>${fmtN(r.fiftyTwoWeekHigh)}</strong></div>
+    <div class="fund-row"><span>52 sem. bas</span><strong>${fmtN(r.fiftyTwoWeekLow)}</strong></div>
+    <div class="fund-row"><span>Objectif analyste</span><strong>${r.targetMeanPrice ? '$' + fmtN(r.targetMeanPrice) : '—'}</strong></div>
+    ${r.sector ? `<div class="fund-row"><span>Secteur</span><strong>${r.sector}</strong></div>` : ''}
+  </div></div>`;
 }
 
 function closeFundamental() {
@@ -625,4 +731,5 @@ function formatPrice(v) {
   return v >= 1000 ? v.toFixed(0) : v.toFixed(2);
 }
 function fmt1(v) { return v != null ? v.toFixed(1) : '—'; }
+function fmt2(v) { return v != null ? v.toFixed(2) : '—'; }
 function fmt4(v) { return v != null ? v.toFixed(4) : '—'; }

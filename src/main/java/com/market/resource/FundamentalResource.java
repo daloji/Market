@@ -67,8 +67,26 @@ public class FundamentalResource {
         return Response.ok(fd).build();
     }
 
-    @GET
-    @Path("/fundamentals/{symbol}/cached")
+    @POST
+    @Path("/fundamentals/{symbol}/from-client")
+    @Transactional
+    @Operation(summary = "Store fundamental data fetched by the client browser (bypasses server IP blocks)")
+    public Response storeFromClient(@PathParam("symbol") String symbol,
+                                    com.market.client.dto.YahooQuoteResponse.QuoteResult quoteResult) {
+        String sym = symbol.toUpperCase();
+        if (quoteResult == null || !quoteResult.hasData()) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("No usable fundamental data in payload").build();
+        }
+        FundamentalData fd = fundamentalService.storeFromClientFetch(sym, quoteResult);
+        if (fd == null) {
+            return Response.serverError().entity("Failed to store fundamental data").build();
+        }
+        return Response.ok(fd)
+                .header("X-Data-Source", "CLIENT_BROWSER")
+                .build();
+    }
+
     @Transactional
     @Operation(summary = "Get the last cached fundamental data without triggering a new fetch")
     public Response getCachedFundamental(@PathParam("symbol") String symbol) {

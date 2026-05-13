@@ -24,6 +24,10 @@ public class StockRecommendation extends PanacheEntity {
     public int score;
 
     public Double currentPrice;
+    public Double previousClose;
+    /** Daily variation in percent: (currentPrice - previousClose) / previousClose * 100. */
+    public Double dailyChangePercent;
+
     public Double rsi;
     public Double sma20;
     public Double sma50;
