@@ -1,6 +1,7 @@
 package com.market.scheduler;
 
 import com.market.model.Stock;
+import com.market.service.BinanceAutoTradeService;
 import com.market.service.FundamentalAnalysisService;
 import com.market.service.RecommendationService;
 import com.market.service.StockDataService;
@@ -21,6 +22,7 @@ public class MarketScheduler {
     @Inject RecommendationService recommendationService;
     @Inject TradeService tradeService;
     @Inject FundamentalAnalysisService fundamentalAnalysisService;
+    @Inject BinanceAutoTradeService autoTradeService;
 
     /**
      * Refreshes quotes and regenerates recommendations for all active stocks.
@@ -46,6 +48,22 @@ public class MarketScheduler {
     @Scheduled(every = "15s", identity = "trade-update")
     public void updateTrades() {
         tradeService.updateAllTrades();
+    }
+
+    /**
+     * Checks BTC signal and auto-places Futures trades every 5 minutes when enabled.
+     * Runs 60 s after startup (after initial signal cache is warmed up).
+     */
+    @Scheduled(every = "5m", delayed = "60s", identity = "btc-auto-trade")
+    public void autoTrade() {
+        if (!autoTradeService.isEnabled()) return;
+        BinanceAutoTradeService.AutoTradeResult result = autoTradeService.checkAndTrade();
+        if ("placed".equals(result.status)) {
+            LOG.infof("[Scheduler] Auto-trade placé: %s conf=%d%% @ %.2f",
+                    result.direction, result.confidence, result.entryPrice);
+        } else if ("error".equals(result.status)) {
+            LOG.warnf("[Scheduler] Auto-trade erreur: %s", result.message);
+        }
     }
 
     /**

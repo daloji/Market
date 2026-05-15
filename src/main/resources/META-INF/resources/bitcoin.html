@@ -542,6 +542,158 @@ Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
 <!-- ══════════════════════  TAB : TRADES RÉELS  ══════════════════════════════ -->
 <div id="tab-real" class="tab-pane">
 
+  <!-- ══════════════  AUTO-TRADE BINANCE FUTURES  ══════════════════════════ -->
+  <div class="card-panel" id="autotrade-panel" style="margin-bottom:16px;border:1px solid var(--border)">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">🤖</span>
+        <div>
+          <div style="font-weight:700;font-size:15px">Auto-Trade Binance Futures</div>
+          <div style="font-size:12px;color:var(--muted)">Place automatiquement LONG/SHORT selon la confiance du signal</div>
+        </div>
+        <span id="at-api-badge" style="font-size:11px;padding:3px 8px;border-radius:10px;font-weight:600">⏳</span>
+        <span id="at-net-badge" style="font-size:11px;padding:3px 8px;border-radius:10px;background:#2a2a0a;color:#f7c948;display:none">TESTNET</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button id="at-btn-toggle" onclick="atToggle()"
+                style="padding:7px 18px;border-radius:7px;font-weight:700;font-size:13px;cursor:pointer;border:none">
+          ⏳
+        </button>
+        <button onclick="atTrigger()"
+                style="padding:7px 16px;border-radius:7px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:13px;cursor:pointer">
+          ▶ Déclencher manuellement
+        </button>
+        <button onclick="document.getElementById('at-config').style.display=document.getElementById('at-config').style.display==='none'?'block':'none'"
+                style="padding:7px 12px;border-radius:7px;background:none;border:1px solid var(--border);color:var(--muted);font-size:13px;cursor:pointer">
+          ⚙️ Config
+        </button>
+      </div>
+    </div>
+
+    <!-- Config section (collapsible) -->
+    <div id="at-config" style="display:none;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px">
+
+        <div class="input-group">
+          <label>🎯 Confiance min. : <strong id="at-conf-lbl">70%</strong></label>
+          <input type="range" id="at-conf" min="50" max="95" value="70"
+                 oninput="document.getElementById('at-conf-lbl').textContent=this.value+'%'"/>
+        </div>
+
+        <div class="input-group">
+          <label>💰 Mise par trade (USDT)</label>
+          <input type="number" id="at-amount" value="50" min="5" step="5"
+                 style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px 10px;font-size:14px"/>
+        </div>
+
+        <div class="input-group">
+          <label>⚡ Levier : <strong id="at-lev-lbl">10×</strong></label>
+          <input type="range" id="at-leverage" min="1" max="20" value="10"
+                 oninput="document.getElementById('at-lev-lbl').textContent=this.value+'×'"/>
+        </div>
+
+        <div class="input-group">
+          <label>🛑 Stop-Loss : <strong id="at-sl-lbl">1.5%</strong> de l'entrée</label>
+          <input type="range" id="at-sl-pct" min="0.5" max="5" step="0.5" value="1.5"
+                 oninput="document.getElementById('at-sl-lbl').textContent=this.value+'%'"/>
+        </div>
+
+        <div class="input-group">
+          <label>🎯 Take-Profit : <strong id="at-tp-lbl">3.0%</strong> de l'entrée</label>
+          <input type="range" id="at-tp-pct" min="1" max="10" step="0.5" value="3.0"
+                 oninput="document.getElementById('at-tp-lbl').textContent=this.value+'%'"/>
+        </div>
+
+      </div>
+      <button onclick="atSaveConfig()"
+              style="margin-top:12px;padding:8px 20px;background:var(--buy);color:#000;border:none;border-radius:7px;font-weight:700;font-size:13px;cursor:pointer">
+        💾 Appliquer la config
+      </button>
+    </div>
+
+    <!-- Last result -->
+    <div id="at-result" style="display:none;margin-top:14px;padding:10px 14px;border-radius:8px;font-size:13px"></div>
+
+    <!-- API key warning -->
+    <div id="at-key-warn" style="display:none;margin-top:12px;padding:10px 14px;background:#2a1a0a;border:1px solid #5a3a1a;border-radius:8px;font-size:12px;color:#f7c948;line-height:1.6">
+      ⚠️ <strong>Clé API non configurée.</strong><br>
+      Pour activer le trading réel, ajoutez dans <code>application.properties</code> :<br>
+      <code style="font-size:11px;color:#aaa">market.binance.futures.api-key=VOTRE_CLE<br>market.binance.futures.secret=VOTRE_SECRET</code><br>
+      Créez des clés sur <a href="https://www.binance.com/fr/my/settings/api-management" target="_blank" style="color:#f7c948">Binance → API Management</a> avec la permission <strong>Futures</strong>.
+    </div>
+
+  </div>
+  <!-- /AUTO-TRADE PANEL -->
+
+  <!-- ══════════════  POSITIONS BINANCE FUTURES EN DIRECT  ════════════════ -->
+  <div class="card-panel" id="positions-panel" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:18px">📊</span>
+        <span style="font-weight:700;font-size:15px">Positions ouvertes — Binance Futures</span>
+        <span id="pos-count-badge" style="font-size:11px;padding:2px 8px;border-radius:10px;background:var(--surface2);color:var(--muted)">—</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="pos-last-refresh" style="font-size:11px;color:var(--muted)"></span>
+        <button onclick="atLoadPositions()"
+                style="padding:5px 12px;border-radius:6px;background:none;border:1px solid var(--border);color:var(--muted);font-size:12px;cursor:pointer">
+          ⟳ Rafraîchir
+        </button>
+        <span style="font-size:10px;color:var(--muted);opacity:.6">auto 5s</span>
+      </div>
+    </div>
+
+    <!-- Positions table -->
+    <div id="pos-no-api" style="display:none;text-align:center;padding:20px;color:var(--muted);font-size:13px">
+      ⚠️ Clé API non configurée
+    </div>
+    <div id="pos-empty" style="display:none;text-align:center;padding:24px;color:var(--muted)">
+      <div style="font-size:32px;margin-bottom:8px">📭</div>
+      <div>Aucune position ouverte sur Binance Futures</div>
+    </div>
+    <div id="pos-error" style="display:none;padding:10px;color:#f44336;font-size:13px;background:#2a0a0a;border-radius:6px"></div>
+
+    <div id="pos-table-wrap" style="display:none;overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px">
+            <th style="padding:8px 10px;text-align:left">Direction</th>
+            <th style="padding:8px 10px;text-align:right">Quantité</th>
+            <th style="padding:8px 10px;text-align:right">Entrée</th>
+            <th style="padding:8px 10px;text-align:right">Prix actuel</th>
+            <th style="padding:8px 10px;text-align:right">🛑 Stop-Loss</th>
+            <th style="padding:8px 10px;text-align:right">🎯 Take-Profit</th>
+            <th style="padding:8px 10px;text-align:right">Levier</th>
+            <th style="padding:8px 10px;text-align:right">Marge</th>
+            <th style="padding:8px 10px;text-align:right">P&amp;L $</th>
+            <th style="padding:8px 10px;text-align:right">P&amp;L %</th>
+            <th style="padding:8px 10px;text-align:right">Liquidation</th>
+          </tr>
+        </thead>
+        <tbody id="pos-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- Résumé P&L total -->
+    <div id="pos-summary" style="display:none;margin-top:12px;padding:10px 14px;background:var(--surface2);border-radius:8px;display:flex;gap:24px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">P&L total</div>
+        <div id="pos-total-pnl" style="font-size:22px;font-weight:700">—</div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Marge totale</div>
+        <div id="pos-total-margin" style="font-size:18px;font-weight:600">—</div>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Rendement</div>
+        <div id="pos-total-pct" style="font-size:18px;font-weight:600">—</div>
+      </div>
+    </div>
+  </div>
+  <!-- /POSITIONS PANEL -->
+
   <!-- ── Portfolio summary bar ──────────────────────────────────────────── -->
   <div class="real-summary-bar" id="real-summary-bar">
     <div class="real-sum-item">
@@ -705,5 +857,294 @@ Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
 </footer>
 
 <script src="bitcoin.js"></script>
-</body>
-</html>
+
+<!-- ══════════  AUTO-TRADE JAVASCRIPT  ══════════════════════════════════════ -->
+<script>
+// ── Auto-trade state ──────────────────────────────────────────────────────────
+let atEnabled = false;
+let atPosInterval = null;
+
+// Load status on tab switch + initial load
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.tab === 'real') {
+      atLoadStatus();
+      atLoadPositions();
+      if (!atPosInterval) atPosInterval = setInterval(atLoadPositions, 5000);
+    } else {
+      clearInterval(atPosInterval);
+      atPosInterval = null;
+    }
+  });
+});
+
+async function atLoadStatus() {
+  try {
+    const s = await fetch('/api/futures/status').then(r => r.json());
+    atRenderStatus(s);
+  } catch (e) {
+    console.warn('[AutoTrade] status error:', e);
+  }
+}
+
+function atRenderStatus(s) {
+  atEnabled = s.enabled;
+
+  // API badge
+  const apiBadge = document.getElementById('at-api-badge');
+  const keyWarn  = document.getElementById('at-key-warn');
+  if (s.configured) {
+    apiBadge.textContent = '🔑 API OK';
+    apiBadge.style.cssText = 'font-size:11px;padding:3px 8px;border-radius:10px;font-weight:600;background:#0a2a0a;color:#4caf50';
+    keyWarn.style.display = 'none';
+  } else {
+    apiBadge.textContent = '⚠️ Non configuré';
+    apiBadge.style.cssText = 'font-size:11px;padding:3px 8px;border-radius:10px;font-weight:600;background:#2a1a0a;color:#f7c948';
+    keyWarn.style.display = 'block';
+  }
+
+  // Testnet badge
+  document.getElementById('at-net-badge').style.display = s.testnet ? 'inline' : 'none';
+
+  // Toggle button
+  const btn = document.getElementById('at-btn-toggle');
+  if (s.enabled) {
+    btn.textContent = '⏹ Désactiver';
+    btn.style.background = '#5a1a1a';
+    btn.style.color = '#ff6b6b';
+    btn.style.border = '1px solid #7a2a2a';
+  } else {
+    btn.textContent = '▶ Activer auto-trade';
+    btn.style.background = 'var(--buy)';
+    btn.style.color = '#000';
+    btn.style.border = 'none';
+  }
+
+  // Config sliders
+  if (s.minConfidence) {
+    document.getElementById('at-conf').value = s.minConfidence;
+    document.getElementById('at-conf-lbl').textContent = s.minConfidence + '%';
+  }
+  if (s.amountUsdt) document.getElementById('at-amount').value = s.amountUsdt;
+  if (s.leverage) {
+    document.getElementById('at-leverage').value = s.leverage;
+    document.getElementById('at-lev-lbl').textContent = s.leverage + '×';
+  }
+
+  // SL/TP pct sliders
+  if (s.slPct) {
+    document.getElementById('at-sl-pct').value = s.slPct;
+    document.getElementById('at-sl-lbl').textContent = s.slPct + '%';
+  }
+  if (s.tpPct) {
+    document.getElementById('at-tp-pct').value = s.tpPct;
+    document.getElementById('at-tp-lbl').textContent = s.tpPct + '%';
+  }
+
+  // Last result
+  if (s.lastResult && s.lastResult.status) atRenderResult(s.lastResult);
+}
+
+async function atToggle() {
+  const url = atEnabled ? '/api/futures/disable' : '/api/futures/enable';
+  try {
+    const r = await fetch(url, { method: 'POST' }).then(r => r.json());
+    if (r.error) {
+      atShowResult({ status: 'error', message: r.error });
+    } else {
+      await atLoadStatus();
+    }
+  } catch (e) {
+    atShowResult({ status: 'error', message: 'Erreur réseau: ' + e.message });
+  }
+}
+
+async function atTrigger() {
+  const btn = event.target;
+  btn.textContent = '⏳ En cours…';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/futures/trigger', { method: 'POST' }).then(r => r.json());
+    atRenderResult(r);
+    await atLoadStatus();
+  } catch (e) {
+    atShowResult({ status: 'error', message: 'Erreur réseau: ' + e.message });
+  } finally {
+    btn.textContent = '▶ Déclencher manuellement';
+    btn.disabled = false;
+  }
+}
+
+async function atSaveConfig() {
+  const body = {
+    minConfidence: parseInt(document.getElementById('at-conf').value),
+    amountUsdt:    parseFloat(document.getElementById('at-amount').value),
+    leverage:      parseInt(document.getElementById('at-leverage').value),
+    slPct:         parseFloat(document.getElementById('at-sl-pct').value),
+    tpPct:         parseFloat(document.getElementById('at-tp-pct').value)
+  };
+  try {
+    await fetch('/api/futures/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    document.getElementById('at-config').style.display = 'none';
+    atShowResult({ status: 'skipped', message: '✅ Configuration sauvegardée.' });
+  } catch (e) {
+    atShowResult({ status: 'error', message: 'Erreur: ' + e.message });
+  }
+}
+
+function atRenderResult(r) {
+  atShowResult(r);
+}
+
+function atShowResult(r) {
+  const el = document.getElementById('at-result');
+  el.style.display = 'block';
+  const ts = r.timestamp ? new Date(r.timestamp).toLocaleTimeString('fr-FR') : '';
+
+  if (r.status === 'placed') {
+    const dirColor = r.direction === 'LONG' ? '#4caf50' : '#f44336';
+    el.style.background = '#0a2a0a';
+    el.style.border = '1px solid #1a4a1a';
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span style="font-size:18px">✅</span>
+        <span style="font-weight:700;color:${dirColor}">${r.direction}</span>
+        <span style="color:var(--muted)">×${r.leverage}</span>
+        <span>@ <strong>$${r.entryPrice?.toLocaleString('fr-FR', {minimumFractionDigits:2})}</strong></span>
+        <span style="color:#f44336">SL $${r.sl?.toLocaleString('fr-FR', {minimumFractionDigits:1})}</span>
+        <span style="color:#4caf50">TP $${r.tp1?.toLocaleString('fr-FR', {minimumFractionDigits:1})}</span>
+        <span style="color:var(--muted);font-size:11px">${ts}</span>
+      </div>
+      <div style="margin-top:6px;font-size:11px;color:var(--muted)">${r.message || ''}</div>`;
+  } else if (r.status === 'error') {
+    el.style.background = '#2a0a0a';
+    el.style.border = '1px solid #4a1a1a';
+    el.innerHTML = `<span style="color:#f44336">❌ ${r.message}</span><span style="color:var(--muted);font-size:11px;margin-left:10px">${ts}</span>`;
+  } else {
+    el.style.background = 'var(--surface2)';
+    el.style.border = '1px solid var(--border)';
+    el.innerHTML = `<span style="color:var(--muted)">⏭ ${r.message}</span><span style="color:var(--muted);font-size:11px;margin-left:10px">${ts}</span>`;
+  }
+}
+
+// Initial load if "real" tab is active
+if (document.querySelector('.tab-btn[data-tab="real"]')?.classList.contains('active')) {
+  atLoadStatus();
+  atLoadPositions();
+  atPosInterval = setInterval(atLoadPositions, 5000);
+}
+
+// ── Live Positions ────────────────────────────────────────────────────────────
+
+async function atLoadPositions() {
+  try {
+    const positions = await fetch('/api/futures/positions').then(r => {
+      if (r.status === 400) return r.json().then(e => { throw new Error(e.error || 'API non configurée'); });
+      if (!r.ok) return r.json().then(e => { throw new Error(e.error || 'Erreur serveur'); });
+      return r.json();
+    });
+    atRenderPositions(positions);
+  } catch (e) {
+    const msg = e.message || String(e);
+    if (msg.includes('configuré') || msg.includes('configured')) {
+      document.getElementById('pos-no-api').style.display = 'block';
+      document.getElementById('pos-empty').style.display = 'none';
+      document.getElementById('pos-table-wrap').style.display = 'none';
+      document.getElementById('pos-error').style.display = 'none';
+    } else {
+      document.getElementById('pos-error').style.display = 'block';
+      document.getElementById('pos-error').textContent = '❌ ' + msg;
+      document.getElementById('pos-no-api').style.display = 'none';
+    }
+  }
+  document.getElementById('pos-last-refresh').textContent =
+    'Mis à jour : ' + new Date().toLocaleTimeString('fr-FR');
+}
+
+function atRenderPositions(positions) {
+  document.getElementById('pos-no-api').style.display = 'none';
+  document.getElementById('pos-error').style.display = 'none';
+
+  const badge = document.getElementById('pos-count-badge');
+  badge.textContent = positions.length + ' position' + (positions.length > 1 ? 's' : '');
+  badge.style.background = positions.length > 0 ? '#0a2a0a' : 'var(--surface2)';
+  badge.style.color       = positions.length > 0 ? '#4caf50' : 'var(--muted)';
+
+  if (positions.length === 0) {
+    document.getElementById('pos-empty').style.display = 'block';
+    document.getElementById('pos-table-wrap').style.display = 'none';
+    document.getElementById('pos-summary').style.display = 'none';
+    return;
+  }
+
+  document.getElementById('pos-empty').style.display = 'none';
+  document.getElementById('pos-table-wrap').style.display = 'block';
+
+  const tbody = document.getElementById('pos-tbody');
+  tbody.innerHTML = '';
+
+  let totalPnl    = 0;
+  let totalMargin = 0;
+
+  positions.forEach(p => {
+    totalPnl    += p.unrealizedPnl || 0;
+    totalMargin += p.margin || 0;
+
+    const isLong   = p.direction === 'LONG';
+    const dirColor = isLong ? '#4caf50' : '#f44336';
+    const pnlColor = (p.unrealizedPnl || 0) >= 0 ? '#4caf50' : '#f44336';
+
+    const pnlSign  = (p.unrealizedPnl || 0) >= 0 ? '+' : '';
+    const pctSign  = (p.pnlPct || 0) >= 0 ? '+' : '';
+
+    const slText   = p.sl   ? '$' + p.sl.toLocaleString('fr-FR', {minimumFractionDigits:1}) : '—';
+    const tpText   = p.tp1  ? '$' + p.tp1.toLocaleString('fr-FR', {minimumFractionDigits:1}) : '—';
+
+    // Distance from entry to SL/TP
+    let slDist = '', tpDist = '';
+    if (p.sl && p.entryPrice) {
+      const d = ((p.sl - p.entryPrice) / p.entryPrice * 100);
+      slDist = `<span style="font-size:10px;color:#f44336;margin-left:4px">${d.toFixed(1)}%</span>`;
+    }
+    if (p.tp1 && p.entryPrice) {
+      const d = ((p.tp1 - p.entryPrice) / p.entryPrice * 100);
+      tpDist = `<span style="font-size:10px;color:#4caf50;margin-left:4px">${d > 0 ? '+' : ''}${d.toFixed(1)}%</span>`;
+    }
+
+    const tr = document.createElement('tr');
+    tr.style.borderTop = '1px solid var(--border)';
+    tr.innerHTML = `
+      <td style="padding:10px 10px">
+        <span style="font-weight:700;color:${dirColor};font-size:14px">${isLong ? '▲ LONG' : '▼ SHORT'}</span>
+      </td>
+      <td style="padding:10px;text-align:right">${p.quantity} BTC</td>
+      <td style="padding:10px;text-align:right;font-weight:600">$${(p.entryPrice||0).toLocaleString('fr-FR', {minimumFractionDigits:2})}</td>
+      <td style="padding:10px;text-align:right;font-weight:600">$${(p.markPrice||0).toLocaleString('fr-FR', {minimumFractionDigits:2})}</td>
+      <td style="padding:10px;text-align:right;color:#f44336">${slText}${slDist}</td>
+      <td style="padding:10px;text-align:right;color:#4caf50">${tpText}${tpDist}</td>
+      <td style="padding:10px;text-align:right">×${p.leverage}</td>
+      <td style="padding:10px;text-align:right">${(p.margin||0).toFixed(2)} $</td>
+      <td style="padding:10px;text-align:right;font-weight:700;color:${pnlColor}">${pnlSign}${(p.unrealizedPnl||0).toFixed(2)} $</td>
+      <td style="padding:10px;text-align:right;font-weight:700;color:${pnlColor}">${pctSign}${(p.pnlPct||0).toFixed(2)}%</td>
+      <td style="padding:10px;text-align:right;color:#7d3f3f;font-size:12px">$${(p.liquidationPrice||0).toLocaleString('fr-FR', {minimumFractionDigits:1})}</td>`;
+    tbody.appendChild(tr);
+  });
+
+  // Summary
+  const totalPct   = totalMargin > 0 ? totalPnl / totalMargin * 100 : 0;
+  const totalColor = totalPnl >= 0 ? '#4caf50' : '#f44336';
+  const totalSign  = totalPnl >= 0 ? '+' : '';
+
+  const summary = document.getElementById('pos-summary');
+  summary.style.display = 'flex';
+  document.getElementById('pos-total-pnl').textContent    = totalSign + totalPnl.toFixed(2) + ' $';
+  document.getElementById('pos-total-pnl').style.color    = totalColor;
+  document.getElementById('pos-total-margin').textContent  = totalMargin.toFixed(2) + ' $';
+  document.getElementById('pos-total-pct').textContent    = (totalPct >= 0 ? '+' : '') + totalPct.toFixed(2) + '%';
+  document.getElementById('pos-total-pct').style.color    = totalColor;
+}
+</script>
