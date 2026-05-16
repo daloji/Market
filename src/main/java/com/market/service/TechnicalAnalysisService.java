@@ -1,6 +1,9 @@
 package com.market.service;
 
+import com.market.model.CandleDTO;
+import com.market.model.MarketStructureResult;
 import jakarta.enterprise.context.ApplicationScoped;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -333,5 +336,104 @@ public class TechnicalAnalysisService {
             atr = (atr * (period - 1) + tr[i]) / period;
         }
         return atr;
+    }
+
+    // ── Market Structure ──────────────────────────────────────────────────────
+
+    /**
+     * Detects market structure (HH/HL, LH/LL, Breakout, Consolidation) from OHLCV candles.
+     *
+     * <p>Algorithm:
+     * <ol>
+     *   <li>Find swing pivot highs and lows: a candle is a pivot high if its {@code high}
+     *       is strictly the highest in the window [i-strength, i+strength].</li>
+     *   <li>Compare the last two confirmed pivot highs and lows to classify HH/HL/LH/LL.</li>
+     *   <li>Check for breakout: current close exceeds the last pivot high/low by 0.3%.</li>
+     *   <li>If no clear structure, classify as Consolidation.</li>
+     * </ol>
+     *
+     * @param candles       chronological OHLCV candles (oldest first)
+     * @param pivotStrength number of bars on each side required to confirm a pivot (e.g. 3)
+     * @return MarketStructureResult with type, HH/HL/LH/LL flags, support/resistance and score
+     */
+    public MarketStructureResult detectMarketStructure(List<CandleDTO> candles, int pivotStrength) {
+        MarketStructureResult result = new MarketStructureResult();
+
+        int n = candles.size();
+        // Need at least 2×strength + some room for 2 confirmed pivots
+        if (n < pivotStrength * 2 + 10) {
+            result.type        = MarketStructureResult.Type.CONSOLIDATION;
+            result.score       = 0;
+            result.description = "Pas assez de données pour la structure";
+            return result;
+        }
+
+        List<Double>  pivotHighs = new ArrayList<>();
+        List<Double>  pivotLows  = new ArrayList<>();
+
+        // Last pivotStrength candles are unconfirmed — exclude them
+        int limit = n - pivotStrength;
+        for (int i = pivotStrength; i < limit; i++) {
+            boolean isPivotHigh = true;
+            boolean isPivotLow  = true;
+            double  candleHigh  = candles.get(i).high;
+            double  candleLow   = candles.get(i).low;
+
+            for (int j = i - pivotStrength; j <= i + pivotStrength; j++) {
+                if (j == i) continue;
+                if (candles.get(j).high >= candleHigh) isPivotHigh = false;
+                if (candles.get(j).low  <= candleLow)  isPivotLow  = false;
+            }
+            if (isPivotHigh) pivotHighs.add(candleHigh);
+            if (isPivotLow)  pivotLows.add(candleLow);
+        }
+
+        double currentClose = candles.get(n - 1).close;
+
+        // Extract last two confirmed pivots
+        double lastPH = pivotHighs.size() >= 1 ? pivotHighs.get(pivotHighs.size() - 1) : Double.NaN;
+        double prevPH = pivotHighs.size() >= 2 ? pivotHighs.get(pivotHighs.size() - 2) : Double.NaN;
+        double lastPL = pivotLows.size()  >= 1 ? pivotLows.get(pivotLows.size() - 1)   : Double.NaN;
+        double prevPL = pivotLows.size()  >= 2 ? pivotLows.get(pivotLows.size() - 2)   : Double.NaN;
+
+        result.lastPivotHigh = Double.isNaN(lastPH) ? 0 : lastPH;
+        result.lastPivotLow  = Double.isNaN(lastPL) ? 0 : lastPL;
+        result.resistance    = result.lastPivotHigh;
+        result.support       = result.lastPivotLow;
+
+        // Classify swing structure
+        result.hh = !Double.isNaN(lastPH) && !Double.isNaN(prevPH) && lastPH > prevPH;
+        result.hl = !Double.isNaN(lastPL) && !Double.isNaN(prevPL) && lastPL > prevPL;
+        result.lh = !Double.isNaN(lastPH) && !Double.isNaN(prevPH) && lastPH < prevPH;
+        result.ll = !Double.isNaN(lastPL) && !Double.isNaN(prevPL) && lastPL < prevPL;
+
+        // Breakout: close exceeds last confirmed pivot by 0.3% buffer
+        double buf          = currentClose * 0.003;
+        boolean breakoutUp   = !Double.isNaN(lastPH) && currentClose > lastPH + buf;
+        boolean breakoutDown = !Double.isNaN(lastPL) && currentClose < lastPL - buf;
+
+        if (result.hh && result.hl) {
+            result.type        = MarketStructureResult.Type.BULL_TREND;
+            result.score       = 20;
+            result.description = "HH+HL — structure haussière";
+        } else if (result.lh && result.ll) {
+            result.type        = MarketStructureResult.Type.BEAR_TREND;
+            result.score       = -20;
+            result.description = "LH+LL — structure baissière";
+        } else if (breakoutUp) {
+            result.type        = MarketStructureResult.Type.BREAKOUT_UP;
+            result.score       = 15;
+            result.description = String.format("Breakout haussier (>%.0f)", lastPH);
+        } else if (breakoutDown) {
+            result.type        = MarketStructureResult.Type.BREAKOUT_DOWN;
+            result.score       = -15;
+            result.description = String.format("Breakout baissier (<%.0f)", lastPL);
+        } else {
+            result.type        = MarketStructureResult.Type.CONSOLIDATION;
+            result.score       = -5;
+            result.description = "Consolidation — structure indéfinie";
+        }
+
+        return result;
     }
 }

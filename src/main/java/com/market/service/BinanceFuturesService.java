@@ -6,6 +6,7 @@ import org.jboss.logging.Logger;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
+import java.util.Locale;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -85,21 +86,40 @@ public class BinanceFuturesService {
     }
 
     /**
+     * Closes an existing position with a MARKET order using reduceOnly=true.
+     * Unlike placeMarketOrder, this guarantees the order only reduces (never flips) the position.
+     * Must be used for all close operations (manual close, SL/TP hit).
+     */
+    public String closeWithMarket(String symbol, String side, String quantity) throws Exception {
+        String params = "symbol=" + symbol
+                + "&side=" + side
+                + "&type=MARKET"
+                + "&quantity=" + quantity
+                + "&reduceOnly=true"
+                + "&timestamp=" + ts();
+        return post("/fapi/v1/order", params + "&signature=" + sign(params));
+    }
+
+    /**
      * Places a STOP_MARKET (SL) or TAKE_PROFIT_MARKET (TP) conditional order.
-     * Uses closePosition=true so it closes the full position — no quantity needed.
-     * Uses workingType=MARK_PRICE for reliable triggering (avoids wick-triggered SL).
+     * Uses reduceOnly=true with explicit quantity (compatible with all account types).
+     * closePosition=true triggered error -4120 on some accounts.
+     * Uses workingType=MARK_PRICE to avoid wick-triggered stops.
      *
      * @param symbol    e.g. "BTCUSDT"
      * @param side      "SELL" (to close a LONG), "BUY" (to close a SHORT)
      * @param type      "STOP_MARKET" or "TAKE_PROFIT_MARKET"
      * @param stopPrice trigger price (1 decimal place for BTCUSDT)
+     * @param quantity  BTC quantity to close (e.g. "0.010")
      */
-    public String placeCloseOrder(String symbol, String side, String type, double stopPrice) throws Exception {
+    public String placeCloseOrder(String symbol, String side, String type,
+                                  double stopPrice, String quantity) throws Exception {
         String params = "symbol=" + symbol
                 + "&side=" + side
                 + "&type=" + type
-                + "&stopPrice=" + String.format("%.1f", stopPrice)
-                + "&closePosition=true"
+                + "&stopPrice=" + String.format(Locale.US, "%.1f", stopPrice)
+                + "&quantity=" + quantity
+                + "&reduceOnly=true"
                 + "&workingType=MARK_PRICE"
                 + "&timestamp=" + ts();
         return post("/fapi/v1/order", params + "&signature=" + sign(params));
@@ -132,6 +152,26 @@ public class BinanceFuturesService {
         return get("/fapi/v2/account", params + "&signature=" + sign(params));
     }
 
+    // ── Public market data (no auth, always live fapi.binance.com) ────────────
+
+    /**
+     * Returns current open interest for a symbol.
+     * GET /fapi/v1/openInterest?symbol=BTCUSDT
+     * {"openInterest":"12345.678","symbol":"BTCUSDT","time":1234567890}
+     */
+    public String getOpenInterest(String symbol) throws Exception {
+        return getPublic("/fapi/v1/openInterest", "symbol=" + symbol);
+    }
+
+    /**
+     * Returns premium index (mark price, last funding rate, next funding time).
+     * GET /fapi/v1/premiumIndex?symbol=BTCUSDT
+     * {"lastFundingRate":"0.00010000","nextFundingTime":1234567890,"markPrice":"..."}
+     */
+    public String getPremiumIndex(String symbol) throws Exception {
+        return getPublic("/fapi/v1/premiumIndex", "symbol=" + symbol);
+    }
+
     // ── HTTP helpers ──────────────────────────────────────────────────────────
 
     private String post(String path, String body) throws Exception {
@@ -161,6 +201,16 @@ public class BinanceFuturesService {
                 .uri(URI.create(baseUrl() + path + "?" + query))
                 .header("X-MBX-APIKEY", apiKey)
                 .timeout(Duration.ofSeconds(15))
+                .GET()
+                .build();
+        return send(req, "GET " + path);
+    }
+
+    /** Public GET — no API key, always uses live fapi.binance.com. */
+    private String getPublic(String path, String query) throws Exception {
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(LIVE_URL + path + "?" + query))
+                .timeout(Duration.ofSeconds(10))
                 .GET()
                 .build();
         return send(req, "GET " + path);

@@ -313,6 +313,249 @@ function updateIndicators(s) {
     obvEl.className   = 'ind-value trend-neutral';
     obvLabel.textContent = 'Pas de pression de volume dominante';
   }
+
+  // ── Multi-Timeframe panel ────────────────────────────────────────────────
+  // 4h
+  const bias4h = s.tf4hBias || 'NEUTRAL';
+  const el4h   = document.getElementById('mtf-4h-bias');
+  if (el4h) {
+    if (bias4h === 'BULL') { el4h.textContent = '▲ BULL'; el4h.style.color = '#4caf50'; }
+    else if (bias4h === 'BEAR') { el4h.textContent = '▼ BEAR'; el4h.style.color = '#f44336'; }
+    else { el4h.textContent = '→ NEUTRE'; el4h.style.color = '#9e9e9e'; }
+    setText('mtf-4h-ema9',  s.tf4hEma9  ? s.tf4hEma9.toFixed(0)  : '—');
+    setText('mtf-4h-ema21', s.tf4hEma21 ? s.tf4hEma21.toFixed(0) : '—');
+    setText('mtf-4h-rsi',   s.tf4hRsi   ? s.tf4hRsi.toFixed(1)   : '—');
+    const sc4h = s.tf4hScore || 0;
+    const el4hSc = document.getElementById('mtf-4h-score');
+    el4hSc.textContent = (sc4h >= 0 ? '+' : '') + sc4h + ' pts';
+    el4hSc.style.color = sc4h > 0 ? '#4caf50' : sc4h < 0 ? '#f44336' : '#9e9e9e';
+  }
+
+  // 1h (current signal)
+  const el1h = document.getElementById('mtf-1h-signal');
+  if (el1h) {
+    const dir = s.direction || 'WAIT';
+    if (dir === 'LONG')  { el1h.textContent = '▲ LONG';  el1h.style.color = '#4caf50'; }
+    else if (dir === 'SHORT') { el1h.textContent = '▼ SHORT'; el1h.style.color = '#f44336'; }
+    else { el1h.textContent = '⏳ WAIT'; el1h.style.color = '#9e9e9e'; }
+    const confEl = document.getElementById('mtf-1h-conf');
+    if (confEl) {
+      confEl.textContent = (s.confidence || 0) + '%';
+      confEl.style.color = dir === 'LONG' ? '#4caf50' : dir === 'SHORT' ? '#f44336' : '#9e9e9e';
+    }
+  }
+
+  // 5m
+  const mom5m = s.tf5mMomentum || 'NEUTRAL';
+  const el5m  = document.getElementById('mtf-5m-momentum');
+  if (el5m) {
+    if (mom5m === 'UP')   { el5m.textContent = '▲ UP';   el5m.style.color = '#4caf50'; }
+    else if (mom5m === 'DOWN') { el5m.textContent = '▼ DOWN'; el5m.style.color = '#f44336'; }
+    else { el5m.textContent = '→ NEUTRE'; el5m.style.color = '#9e9e9e'; }
+    const hist5m = s.tf5mMacdHist || 0;
+    setText('mtf-5m-macd', hist5m.toFixed(2));
+    const sc5m = s.tf5mScore || 0;
+    const el5mSc = document.getElementById('mtf-5m-score');
+    el5mSc.textContent = (sc5m >= 0 ? '+' : '') + sc5m + ' pts';
+    el5mSc.style.color = sc5m > 0 ? '#4caf50' : sc5m < 0 ? '#f44336' : '#9e9e9e';
+  }
+
+  // Confluence indicator
+  const confEl = document.getElementById('mtf-confluence');
+  if (confEl && s.tf4hBias) {
+    const dir = s.direction || 'WAIT';
+    const longConf  = dir === 'LONG'  && bias4h === 'BULL' && mom5m === 'UP';
+    const shortConf = dir === 'SHORT' && bias4h === 'BEAR' && mom5m === 'DOWN';
+    const partialL  = dir === 'LONG'  && (bias4h === 'BULL' || mom5m === 'UP');
+    const partialS  = dir === 'SHORT' && (bias4h === 'BEAR' || mom5m === 'DOWN');
+    if (longConf || shortConf) {
+      confEl.textContent = '✅ Confluence forte — les 3 TF sont alignés';
+      confEl.style.color = '#4caf50';
+    } else if (partialL || partialS) {
+      confEl.textContent = '⚠️ Confluence partielle — 2 TF sur 3 alignés';
+      confEl.style.color = '#f7c948';
+    } else {
+      confEl.textContent = '❌ Pas de confluence — TF divergents, signal non confirmé';
+      confEl.style.color = '#f44336';
+    }
+  }
+
+  // ── Market Structure panel ───────────────────────────────────────────────
+  if (s.marketStructure) {
+    const ms = s.marketStructure;
+    const badge = document.getElementById('ms-badge');
+    if (badge) {
+      const labels = {
+        BULL_TREND:    { text: '🔵 BULL TREND',    color: '#4caf50', bg: 'rgba(76,175,80,0.15)'  },
+        BEAR_TREND:    { text: '🔴 BEAR TREND',    color: '#f44336', bg: 'rgba(244,67,54,0.15)'  },
+        BREAKOUT_UP:   { text: '🚀 BREAKOUT ↑',   color: '#4caf50', bg: 'rgba(76,175,80,0.10)'  },
+        BREAKOUT_DOWN: { text: '💥 BREAKOUT ↓',   color: '#f44336', bg: 'rgba(244,67,54,0.10)'  },
+        CONSOLIDATION: { text: '⚪ CONSOLIDATION', color: '#9e9e9e', bg: 'rgba(158,158,158,0.10)' }
+      };
+      const lbl = labels[ms] || { text: ms, color: '#9e9e9e', bg: 'transparent' };
+      badge.textContent        = lbl.text;
+      badge.style.color        = lbl.color;
+      badge.style.background   = lbl.bg;
+    }
+    const descEl = document.getElementById('ms-desc');
+    if (descEl) descEl.textContent = s.msDescription || '';
+
+    const scEl = document.getElementById('ms-score');
+    if (scEl) {
+      const sc = s.msScore || 0;
+      scEl.textContent = (sc >= 0 ? '+' : '') + sc + ' pts';
+      scEl.style.color = sc > 0 ? '#4caf50' : sc < 0 ? '#f44336' : '#9e9e9e';
+    }
+
+    // HH/HL/LH/LL flags
+    const flagActive = { background: 'rgba(76,175,80,0.25)',  color: '#4caf50' };
+    const flagBear   = { background: 'rgba(244,67,54,0.25)',  color: '#f44336' };
+    const flagOff    = { background: 'rgba(255,255,255,0.05)', color: '#555' };
+    const setFlag = (id, active, bearStyle) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const style = active ? (bearStyle ? flagBear : flagActive) : flagOff;
+      el.style.background = style.background;
+      el.style.color      = style.color;
+    };
+    setFlag('ms-hh', s.msHH, false);
+    setFlag('ms-hl', s.msHL, false);
+    setFlag('ms-lh', s.msLH, true);
+    setFlag('ms-ll', s.msLL, true);
+
+    // Support / Resistance
+    const resEl = document.getElementById('ms-resistance');
+    if (resEl) resEl.textContent = s.msResistance ? '$' + s.msResistance.toLocaleString() : '—';
+    const supEl = document.getElementById('ms-support');
+    if (supEl) supEl.textContent = s.msSupport ? '$' + s.msSupport.toLocaleString() : '—';
+  }
+
+  // ── Futures Volumetrics panel ────────────────────────────────────────────
+  // Volume delta
+  const vdBadge = document.getElementById('vol-delta-badge');
+  if (vdBadge) {
+    const vd = s.volumeDeltaTrend || 'NEUTRAL';
+    if      (vd === 'POSITIVE') { vdBadge.textContent = '↑ Acheteurs'; vdBadge.style.color = '#4caf50'; }
+    else if (vd === 'NEGATIVE') { vdBadge.textContent = '↓ Vendeurs';  vdBadge.style.color = '#f44336'; }
+    else                        { vdBadge.textContent = '→ Neutre';     vdBadge.style.color = '#9e9e9e'; }
+    const vdVal = document.getElementById('vol-delta-val');
+    if (vdVal) vdVal.textContent = s.volumeDelta != null
+      ? (s.volumeDelta >= 0 ? '+' : '') + s.volumeDelta.toFixed(2) + ' BTC net'
+      : '—';
+    const vdSc = document.getElementById('vol-delta-score');
+    if (vdSc) {
+      const sc = s.volScore != null ? (s.volScore > 0 ? s.volScore : 0) : 0;
+      // We show only volume delta contribution (approx)
+      vdSc.textContent = vd === 'POSITIVE' ? '+8 pts' : vd === 'NEGATIVE' ? '-8 pts' : '0 pts';
+      vdSc.style.color = vd === 'POSITIVE' ? '#4caf50' : vd === 'NEGATIVE' ? '#f44336' : '#9e9e9e';
+    }
+  }
+
+  // Funding rate
+  const frBadge = document.getElementById('funding-badge');
+  if (frBadge && s.fundingBias != null) {
+    const fb = s.fundingBias;
+    const frMap = {
+      EXTREME_LONG:    { text: '🔴 Extrême LONG',   color: '#f44336' },
+      MODERATE_LONG:   { text: '🟠 Mod. LONG',      color: '#ff9800' },
+      NEUTRAL:         { text: '⚪ Neutre',          color: '#9e9e9e' },
+      MODERATE_SHORT:  { text: '🟢 Mod. SHORT',     color: '#8bc34a' },
+      EXTREME_SHORT:   { text: '🟢 Extrême SHORT',  color: '#4caf50' }
+    };
+    const frLbl = frMap[fb] || { text: fb, color: '#9e9e9e' };
+    frBadge.textContent = frLbl.text;
+    frBadge.style.color = frLbl.color;
+    const frVal = document.getElementById('funding-val');
+    if (frVal) frVal.textContent = s.fundingRate != null
+      ? (s.fundingRate >= 0 ? '+' : '') + (s.fundingRate * 100).toFixed(4) + '%'
+      : '—';
+    const frSc = document.getElementById('funding-score');
+    if (frSc) {
+      const sc = fb === 'EXTREME_SHORT' ? '+7' : fb === 'MODERATE_SHORT' ? '+3'
+               : fb === 'EXTREME_LONG'  ? '-7' : fb === 'MODERATE_LONG'  ? '-3' : '0';
+      frSc.textContent = sc + ' pts';
+      frSc.style.color = parseInt(sc) > 0 ? '#4caf50' : parseInt(sc) < 0 ? '#f44336' : '#9e9e9e';
+    }
+  }
+
+  // OI
+  const oiEl = document.getElementById('oi-val');
+  if (oiEl && s.openInterest) {
+    oiEl.textContent = s.openInterest > 1000
+      ? (s.openInterest / 1000).toFixed(1) + 'k BTC'
+      : s.openInterest.toFixed(0) + ' BTC';
+  }
+
+  // Vol total score
+  const vtEl = document.getElementById('vol-total');
+  if (vtEl && s.volScore != null) {
+    const vs = s.volScore;
+    vtEl.textContent = 'Score volumétrie total : ' + (vs >= 0 ? '+' : '') + vs + ' pts';
+    vtEl.style.color = vs > 0 ? '#4caf50' : vs < 0 ? '#f44336' : '#9e9e9e';
+  }
+
+  // ── Volatility Filter panel ──────────────────────────────────────────────
+  if (s.volatilityRegime) {
+    const regEl = document.getElementById('vf-regime');
+    if (regEl) {
+      const regMap = {
+        EXTREME: { text: '🔴 EXTREME', color: '#f44336' },
+        HIGH:    { text: '🟠 HIGH',    color: '#ff9800' },
+        NORMAL:  { text: '🟢 NORMAL',  color: '#4caf50' },
+        LOW:     { text: '⚪ LOW',     color: '#9e9e9e' }
+      };
+      const rm = regMap[s.volatilityRegime] || { text: s.volatilityRegime, color: '#9e9e9e' };
+      regEl.textContent = rm.text;
+      regEl.style.color = rm.color;
+    }
+    const atrPctEl = document.getElementById('vf-atr-pct');
+    if (atrPctEl) atrPctEl.textContent = 'ATR = ' + (s.atrPct || 0).toFixed(2) + '% du prix';
+
+    const vfScEl = document.getElementById('vf-score');
+    if (vfScEl) {
+      const sc = s.volFilterScore || 0;
+      vfScEl.textContent = (sc >= 0 ? '+' : '') + sc + ' pts';
+      vfScEl.style.color = sc < 0 ? '#f44336' : '#4caf50';
+    }
+
+    // BB state
+    const bbEl = document.getElementById('vf-bb-state');
+    if (bbEl) {
+      const bbMap = {
+        SQUEEZE:   { text: '⚠️ SQUEEZE',   color: '#f7c948' },
+        NORMAL:    { text: '✅ NORMAL',     color: '#4caf50' },
+        EXPANSION: { text: '🔴 EXPANSION',  color: '#f44336' }
+      };
+      const bm = bbMap[s.bbState] || { text: s.bbState || '—', color: '#9e9e9e' };
+      bbEl.textContent = bm.text;
+      bbEl.style.color = bm.color;
+    }
+    const bbWEl = document.getElementById('vf-bb-width');
+    if (bbWEl) bbWEl.textContent = 'Width : ' + (s.bbWidth || 0).toFixed(1) + '%';
+
+    // Extreme candle
+    const canEl = document.getElementById('vf-candle');
+    if (canEl) {
+      if (s.extremeCandle) { canEl.textContent = '🚨 EXTRÊME'; canEl.style.color = '#f44336'; }
+      else                 { canEl.textContent = '✅ Normale'; canEl.style.color = '#4caf50'; }
+    }
+
+    // Filter verdict
+    const vdEl = document.getElementById('vf-verdict');
+    if (vdEl) {
+      const blocked = s.volatilityRegime === 'EXTREME' || s.extremeCandle || s.bbState === 'SQUEEZE';
+      if (blocked) {
+        const why = s.volatilityRegime === 'EXTREME' ? 'ATR extrême — event violent'
+                  : s.extremeCandle ? 'Bougie extrême détectée'
+                  : 'Bollinger Squeeze — direction inconnue';
+        vdEl.textContent = '🚫 Auto-trade bloqué : ' + why;
+        vdEl.style.color = '#f44336';
+      } else {
+        vdEl.textContent = '✅ Volatilité acceptable — trading autorisé';
+        vdEl.style.color = '#4caf50';
+      }
+    }
+  }
 }
 
 // ── Trade Proposals ────────────────────────────────────────────────────────────
@@ -1400,13 +1643,40 @@ function realUpdateModalPnl() {
 
 async function realConfirmClose() {
   if (!realClosingId) return;
-  const cp = parseFloat(document.getElementById('real-close-price').value) || 0;
+  const t = realTrades.find(x => x.id === realClosingId);
+  if (!t) return;
+
+  let cp = parseFloat(document.getElementById('real-close-price').value) || 0;
+  // Normalize symbol: "BTC/USDT" → "BTCUSDT"
+  const symbol = (t.symbol || 'BTCUSDT').replace('/', '');
+
+  // Step 1: close on Binance (market order + cancel SL/TP)
+  try {
+    const binResp = await fetch(`/api/futures/close-position?symbol=${symbol}`, { method: 'POST' });
+    if (binResp.ok) {
+      const binData = await binResp.json();
+      // Use actual Binance fill price if available
+      if (binData.price && binData.price > 0) cp = binData.price;
+    } else {
+      const err = await binResp.json().catch(() => ({}));
+      const msg = err.error || err.message || 'Erreur serveur';
+      // "Aucune position" means already closed on Binance — still close local record
+      if (!msg.toLowerCase().includes('aucune position') && !msg.toLowerCase().includes('no position')) {
+        if (!confirm(`⚠️ Binance : ${msg}\n\nContinuer la clôture locale uniquement ?`)) return;
+      }
+    }
+  } catch (e) {
+    if (!confirm(`⚠️ Erreur Binance : ${e.message}\n\nContinuer la clôture locale uniquement ?`)) return;
+  }
+
+  // Step 2: close in local database with actual (or entered) price
   try {
     const res = await fetch(`/api/trades/${realClosingId}?reason=USER_CLOSED&closePrice=${cp}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(await res.text());
     realCloseModal();
     await loadRealTrades();
-  } catch(e) { alert('Erreur clôture: ' + e.message); }
+    atLoadPositions(); // refresh live positions panel
+  } catch(e) { alert('Erreur clôture locale: ' + e.message); }
 }
 
 function realCloseModal() {

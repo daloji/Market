@@ -333,6 +333,160 @@ Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
       <div id="obv-label" style="font-size:12px;color:var(--muted);text-align:center;margin-top:4px">—</div>
     </div>
 
+    <!-- Multi-Timeframe -->
+    <div class="ind-card" style="grid-column: span 2;">
+      <div class="ind-title" data-tooltip="Analyse multi-timeframe
+4h : tendance structurelle (dominant)
+1h : signal principal
+5m : timing d'entrée
+La confluence des 3 TF augmente la probabilité de succès">Multi-Timeframe (4h / 1h / 5m)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:12px">
+
+        <!-- 4h -->
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">4h — Tendance</div>
+          <div id="mtf-4h-bias" style="font-size:1.3rem;font-weight:700">—</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">
+            EMA9 <span id="mtf-4h-ema9">—</span> / EMA21 <span id="mtf-4h-ema21">—</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted)">RSI(4h) <span id="mtf-4h-rsi">—</span></div>
+          <div style="font-size:11px;margin-top:4px">Score : <span id="mtf-4h-score" style="font-weight:600">—</span></div>
+        </div>
+
+        <!-- 1h -->
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">1h — Signal</div>
+          <div id="mtf-1h-signal" style="font-size:1.3rem;font-weight:700">—</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Confiance</div>
+          <div id="mtf-1h-conf" style="font-size:1.1rem;font-weight:600">—</div>
+        </div>
+
+        <!-- 5m -->
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">5m — Timing</div>
+          <div id="mtf-5m-momentum" style="font-size:1.3rem;font-weight:700">—</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">
+            MACD hist <span id="mtf-5m-macd">—</span>
+          </div>
+          <div style="font-size:11px;margin-top:4px">Score : <span id="mtf-5m-score" style="font-weight:600">—</span></div>
+        </div>
+
+      </div>
+      <!-- Confluence indicator -->
+      <div id="mtf-confluence" style="text-align:center;margin-top:12px;padding:6px;border-radius:6px;font-size:12px;font-weight:600;background:var(--bg-card)">—</div>
+    </div>
+
+    <!-- Market Structure -->
+    <div class="ind-card" style="grid-column: span 2;">
+      <div class="ind-title" data-tooltip="Détection de structure de marché via swing pivots (3 bougies de confirmation).
+HH+HL = tendance haussière confirmée → score +20
+LH+LL = tendance baissière confirmée → score -20
+Breakout = cassure d'un pivot récent → ±15
+Consolidation = pas de structure claire → -5 (évite l'overtrading en range)">Structure de marché (Swing pivots 1h)</div>
+      <div style="display:flex;align-items:center;gap:16px;margin-top:12px;flex-wrap:wrap">
+
+        <!-- Structure badge -->
+        <div style="flex:1;min-width:160px;text-align:center">
+          <div id="ms-badge" style="font-size:1.4rem;font-weight:700;padding:8px 12px;border-radius:8px;background:rgba(255,255,255,0.05)">—</div>
+          <div id="ms-desc" style="font-size:11px;color:var(--muted);margin-top:6px">—</div>
+          <div style="font-size:11px;margin-top:4px">Score : <span id="ms-score" style="font-weight:600">—</span></div>
+        </div>
+
+        <!-- HH / HL / LH / LL flags -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;min-width:140px">
+          <div id="ms-hh" style="text-align:center;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:600;background:rgba(255,255,255,0.05)">HH</div>
+          <div id="ms-hl" style="text-align:center;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:600;background:rgba(255,255,255,0.05)">HL</div>
+          <div id="ms-lh" style="text-align:center;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:600;background:rgba(255,255,255,0.05)">LH</div>
+          <div id="ms-ll" style="text-align:center;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:600;background:rgba(255,255,255,0.05)">LL</div>
+        </div>
+
+        <!-- Support / Resistance levels -->
+        <div style="flex:1;min-width:160px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Resistance (dernier pivot H)</div>
+          <div id="ms-resistance" style="font-size:1rem;font-weight:600;color:#f44336">—</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:8px;margin-bottom:4px">Support (dernier pivot L)</div>
+          <div id="ms-support" style="font-size:1rem;font-weight:600;color:#4caf50">—</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Futures Volumetrics -->
+    <div class="ind-card" style="grid-column: span 2;">
+      <div class="ind-title" data-tooltip="Volumétrie Futures (Binance USDT-M)
+Volume Delta : acheteurs - vendeurs sur 5 dernières bougies 1h (+8 ou -8 pts)
+Funding Rate : contrarian — trop de longs = risque baissier, trop de shorts = risque haussier (±7 pts)
+Funding extrême &gt;0.05% ou &lt;-0.05% : filtre dur sur l'auto-trade">Volumétrie Futures</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px">
+
+        <!-- Volume Delta -->
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Volume Delta (5h)</div>
+          <div id="vol-delta-badge" style="font-size:1.2rem;font-weight:700">—</div>
+          <div id="vol-delta-val" style="font-size:11px;color:var(--muted);margin-top:4px">—</div>
+          <div style="font-size:11px;margin-top:4px">Score : <span id="vol-delta-score" style="font-weight:600">—</span></div>
+        </div>
+
+        <!-- Funding Rate -->
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Funding Rate</div>
+          <div id="funding-badge" style="font-size:1.2rem;font-weight:700">—</div>
+          <div id="funding-val" style="font-size:11px;color:var(--muted);margin-top:4px">—</div>
+          <div style="font-size:11px;margin-top:4px">Score : <span id="funding-score" style="font-weight:600">—</span></div>
+        </div>
+
+        <!-- Open Interest -->
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Open Interest</div>
+          <div id="oi-val" style="font-size:1.1rem;font-weight:700;color:var(--text)">—</div>
+          <div id="oi-trend" style="font-size:11px;color:var(--muted);margin-top:4px">—</div>
+        </div>
+
+      </div>
+      <!-- Vol score total -->
+      <div id="vol-total" style="text-align:center;margin-top:10px;padding:5px;border-radius:6px;font-size:12px;font-weight:600;background:var(--bg-card)">—</div>
+    </div>
+
+    <!-- Volatility Filter (P4) -->
+    <div class="ind-card" style="grid-column: span 2;">
+      <div class="ind-title" data-tooltip="Filtre de volatilité (P4)
+ATR% = ATR(14) / prix × 100 — mesure la volatilité brute
+EXTREME (&gt;3%) : flash crash / news → trade bloqué
+HIGH (2-3%) : forte volatilité → pénalité -10 pts
+NORMAL (0.5-2%) : trading OK
+LOW (&lt;0.5%) : marché en squeeze → pénalité -5 pts
+
+Bollinger Squeeze (BB width &lt;1%) : breakout imminent, direction inconnue → bloqué
+Bougie extrême (range &gt; 3×ATR) : event violent → bloqué">Filtre volatilité (ATR / Bollinger)</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px">
+
+        <!-- Volatility Regime -->
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Régime ATR</div>
+          <div id="vf-regime" style="font-size:1.3rem;font-weight:700">—</div>
+          <div id="vf-atr-pct" style="font-size:11px;color:var(--muted);margin-top:4px">—</div>
+          <div style="font-size:11px;margin-top:4px">Score : <span id="vf-score" style="font-weight:600">—</span></div>
+        </div>
+
+        <!-- Bollinger state -->
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Bollinger Bandes</div>
+          <div id="vf-bb-state" style="font-size:1.3rem;font-weight:700">—</div>
+          <div id="vf-bb-width" style="font-size:11px;color:var(--muted);margin-top:4px">—</div>
+        </div>
+
+        <!-- News candle -->
+        <div style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Bougie event</div>
+          <div id="vf-candle" style="font-size:1.3rem;font-weight:700">—</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">range vs ATR</div>
+        </div>
+
+      </div>
+      <!-- Filter verdict -->
+      <div id="vf-verdict" style="text-align:center;margin-top:10px;padding:6px;border-radius:6px;font-size:12px;font-weight:600;background:var(--bg-card)">—</div>
+    </div>
+
   </section>
 
 </div><!-- /tab-signal -->
@@ -680,6 +834,7 @@ Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
             <th style="padding:8px 10px;text-align:right">P&amp;L $</th>
             <th style="padding:8px 10px;text-align:right">P&amp;L %</th>
             <th style="padding:8px 10px;text-align:right">Liquidation</th>
+            <th style="padding:8px 10px;text-align:center">Action</th>
           </tr>
         </thead>
         <tbody id="pos-tbody"></tbody>
@@ -711,7 +866,7 @@ Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
       <div class="real-sum-value" id="real-count">0</div>
     </div>
     <div class="real-sum-item">
-      <div class="real-sum-label">P&L non réalisé</div>
+      <div class="real-sum-label">P&L non réalisé <span style="font-size:10px;opacity:.6">(Binance live)</span></div>
       <div class="real-sum-value" id="real-total-pnl">—</div>
     </div>
     <div class="real-sum-item">
@@ -1138,11 +1293,9 @@ function atRenderDiagnose(d) {
   const confThreshold = d.signalDirection === 'SHORT'
     ? `${100 - d.minConfidence}% (SHORT seuil ≤${100 - d.minConfidence}%)`
     : `${d.minConfidence}% (LONG seuil ≥${d.minConfidence}%)`;
-  const confBadge = d.signalConfidence != null
-    ? `${d.signalConfidence}% — seuil ${confThreshold}`
-    : '—';
+  // confBadge removed — replaced by confBadgeVal below (with ADX boost info)
   const dirBadge  = d.signalDirection
-    ? d.signalDirection + (d.directionOk ? '' : ' ← filtre EMA actif')
+    ? d.signalDirection + (d.directionOk ? '' : ' ← signal non directionnel')
     : (d.signalError ? '⚠️ ' + d.signalError : '—');
   const coolBadge = d.cooldownOk
     ? 'OK'
@@ -1154,13 +1307,45 @@ function atRenderDiagnose(d) {
     ? `$${d.signalPrice.toLocaleString('fr-FR', {minimumFractionDigits:2})}`
     : '';
 
+  // Hard filter badges
+  const msBadge   = d.marketStructure
+    ? (d.msOk ? d.marketStructure : `⛔ ${d.marketStructure} — range bloqué`)
+    : '—';
+  // tf4hBadge removed — replaced by tf4hBadgeVal below (includes score)
+  const tf5mBadge = d.tf5mMomentum
+    ? (d.tf5mOk ? `✅ ${d.tf5mMomentum}` : `⛔ ${d.tf5mMomentum} — contre signal`)
+    : '—';
+  const vfBadge = d.volatilityRegime
+    ? (d.volFilterOk
+       ? `✅ ${d.volatilityRegime} (ATR ${(d.atrPct||0).toFixed(2)}%, BB ${d.bbState})`
+       : `⛔ ${d.extremeCandle ? 'Bougie extrême' : d.volatilityRegime === 'EXTREME' ? 'ATR EXTREME' : 'BB SQUEEZE'} — bloqué`)
+    : '—';
+  const confBadgeVal = d.signalConfidence != null
+    ? `${d.signalConfidence}% — seuil ${d.effectiveMc ?? d.minConfidence}${d.adxBoostActive ? ' (+5 ADX<25)' : ''}`
+    : '—';
+  const tf4hBadgeVal = d.tf4hBias
+    ? (d.tf4hOk
+       ? `✅ ${d.tf4hBias} (score ${d.tf4hScore ?? '?'})`
+       : `⛔ ${d.tf4hBias} score=${d.tf4hScore} — contre signal fort`)
+    : '—';
+  const confirmBadge = d.confirmRequired
+    ? (d.confirmOk
+       ? `✅ ${d.confirmCount + 1}/${d.confirmRequired} — confirmé`
+       : `⏳ ${Math.min(d.confirmCount + 1, d.confirmRequired - 1)}/${d.confirmRequired} — attente signal consécutif`)
+    : '—';
+
   document.getElementById('at-diag-rows').innerHTML = [
-    row('API configurée',    d.configured,     d.configured ? 'OK' : 'Non configurée'),
-    row('Auto-trade activé', d.enabled,        d.enabled    ? 'Activé' : 'Désactivé'),
-    row('Direction signal',  d.directionOk,    dirBadge + (priceStr ? ' @ ' + priceStr : '')),
-    row('Confiance signal',  d.confidenceOk,   confBadge),
-    row('Cooldown 4h',       d.cooldownOk,     coolBadge),
-    row('Position Binance',  d.positionOk,     posBadge),
+    row('API configurée',            d.configured,         d.configured ? 'OK' : 'Non configurée'),
+    row('Auto-trade activé',         d.enabled,            d.enabled    ? 'Activé' : 'Désactivé'),
+    row('Direction signal',          d.directionOk,        dirBadge + (priceStr ? ' @ ' + priceStr : '')),
+    row('Confiance signal',          d.confidenceOk,       confBadgeVal),
+    row('Structure (consolidation)', d.msOk ?? true,       msBadge),
+    row('Tendance 4h',               d.tf4hOk ?? true,     tf4hBadgeVal),
+    row('Momentum 5m',               d.tf5mOk ?? true,     tf5mBadge),
+    row('Volatilité',                d.volFilterOk ?? true, vfBadge),
+    row('Cooldown (30 min)',         d.cooldownOk,         coolBadge),
+    row('Positions ouvertes ℹ️',    true,                 d.hasOpenPosition ? `${posBadge} (multi-positions autorisé)` : posBadge),
+    row('Confirmation signal',       d.confirmOk ?? false, confirmBadge),
   ].join('');
 
   const reasonEl = document.getElementById('at-diag-reason');
@@ -1263,7 +1448,14 @@ function atRenderPositions(positions) {
       <td style="padding:10px;text-align:right">${(p.margin||0).toFixed(2)} $</td>
       <td style="padding:10px;text-align:right;font-weight:700;color:${pnlColor}">${pnlSign}${(p.unrealizedPnl||0).toFixed(2)} $</td>
       <td style="padding:10px;text-align:right;font-weight:700;color:${pnlColor}">${pctSign}${(p.pnlPct||0).toFixed(2)}%</td>
-      <td style="padding:10px;text-align:right;color:#7d3f3f;font-size:12px">$${(p.liquidationPrice||0).toLocaleString('fr-FR', {minimumFractionDigits:1})}</td>`;
+      <td style="padding:10px;text-align:right;color:#7d3f3f;font-size:12px">$${(p.liquidationPrice||0).toLocaleString('fr-FR', {minimumFractionDigits:1})}</td>
+      <td style="padding:6px 10px;text-align:center">
+        <button onclick="closePosition('${p.symbol||'BTCUSDT'}')"
+                style="padding:5px 10px;border-radius:5px;background:#7d1a1a;border:none;color:#fff;font-size:12px;cursor:pointer;font-weight:600"
+                title="Fermer la position au prix du marché">
+          🔴 Fermer
+        </button>
+      </td>`;
     tbody.appendChild(tr);
   });
 
@@ -1279,6 +1471,31 @@ function atRenderPositions(positions) {
   document.getElementById('pos-total-margin').textContent  = totalMargin.toFixed(2) + ' $';
   document.getElementById('pos-total-pct').textContent    = (totalPct >= 0 ? '+' : '') + totalPct.toFixed(2) + '%';
   document.getElementById('pos-total-pct').style.color    = totalColor;
+
+  // Synchronise la barre résumé avec les données Binance (source authoritative pour le P&L non réalisé)
+  const realPnlEl = document.getElementById('real-total-pnl');
+  if (realPnlEl) {
+    realPnlEl.textContent = (totalPnl >= 0 ? '+' : '') + totalPnl.toFixed(2) + ' $';
+    realPnlEl.style.color = totalColor;
+    realPnlEl.title = 'Source: Binance Futures (prix mark temps réel)';
+  }
+}
+
+async function closePosition(symbol) {
+  const confirmed = confirm(
+    `⚠️ Fermer la position ${symbol} au prix du marché ?\n\nCette action est irréversible.`
+  );
+  if (!confirmed) return;
+
+  try {
+    const resp = await fetch(`/api/futures/close-position?symbol=${symbol}`, { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || 'Erreur serveur');
+    alert(`✅ ${data.message}`);
+    atLoadPositions();
+  } catch (e) {
+    alert(`❌ Échec fermeture: ${e.message}`);
+  }
 }
 </script>
 <script>

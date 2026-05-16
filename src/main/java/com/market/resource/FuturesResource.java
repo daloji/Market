@@ -181,6 +181,24 @@ public class FuturesResource {
         }
     }
 
+    // ── Close position ────────────────────────────────────────────────────────
+
+    /**
+     * Closes the full open BTCUSDT position immediately with a MARKET order.
+     * Cancels all open SL/TP orders and clears internal SL/TP tracking.
+     */
+    @POST @Path("/close-position")
+    public Response closePosition(@QueryParam("symbol") @DefaultValue("BTCUSDT") String symbol) {
+        if (!futures.isConfigured())
+            return Response.status(400).entity(Map.of("error", "Clé API Binance Futures non configurée")).build();
+        try {
+            Map<String, Object> result = autoTrade.closePosition(symbol);
+            return Response.ok(result).build();
+        } catch (Exception e) {
+            return Response.serverError().entity(Map.of("error", e.getMessage())).build();
+        }
+    }
+
     // ── Request DTO ───────────────────────────────────────────────────────────
 
     public static class ConfigRequest {
