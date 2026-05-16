@@ -33,6 +33,7 @@
   <button class="tab-btn active" data-tab="signal">📊 Signal</button>
   <button class="tab-btn"        data-tab="simu">🧮 Simulation</button>
   <button class="tab-btn"        data-tab="real">💹 Trades Réels</button>
+  <button class="tab-btn"        data-tab="signals">📋 Signaux</button>
 </nav>
 
 <!-- ════════════════════════  TAB : SIGNAL  ════════════════════════════════ -->
@@ -577,8 +578,10 @@ Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px">
 
         <div class="input-group">
-          <label>🎯 Confiance min. : <strong id="at-conf-lbl">70%</strong></label>
-          <input type="range" id="at-conf" min="50" max="95" value="70"
+          <label>🎯 Confiance min. : <strong id="at-conf-lbl">60%</strong>
+            <span style="font-size:11px;color:var(--muted);font-weight:400"> (LONG ≥ X · SHORT ≤ 100−X)</span>
+          </label>
+          <input type="range" id="at-conf" min="50" max="85" value="60"
                  oninput="document.getElementById('at-conf-lbl').textContent=this.value+'%'"/>
         </div>
 
@@ -615,6 +618,13 @@ Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
 
     <!-- Last result -->
     <div id="at-result" style="display:none;margin-top:14px;padding:10px 14px;border-radius:8px;font-size:13px"></div>
+
+    <!-- Diagnostic panel -->
+    <div id="at-diag" style="display:none;margin-top:12px;padding:12px 14px;background:var(--surface2);border-radius:8px;font-size:12px">
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">🔍 Diagnostic — conditions pour trader</div>
+      <div id="at-diag-rows" style="display:grid;gap:5px"></div>
+      <div id="at-diag-reason" style="margin-top:10px;font-weight:700;font-size:13px"></div>
+    </div>
 
     <!-- API key warning -->
     <div id="at-key-warn" style="display:none;margin-top:12px;padding:10px 14px;background:#2a1a0a;border:1px solid #5a3a1a;border-radius:8px;font-size:12px;color:#f7c948;line-height:1.6">
@@ -829,6 +839,54 @@ Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
 
 </div><!-- /tab-real -->
 
+<!-- ════════════════════════  TAB : SIGNAUX  ══════════════════════════════ -->
+<div id="tab-signals" class="tab-pane">
+  <div class="card-panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+      <h2 style="margin:0;font-size:16px">📋 Historique des Signaux LONG / SHORT</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="sigFilter" onchange="shLoadSignals()" style="padding:6px 12px;background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:6px">
+          <option value="all">Tous</option>
+          <option value="long">LONG seulement</option>
+          <option value="short">SHORT seulement</option>
+        </select>
+        <select id="sigLimit" onchange="shLoadSignals()" style="padding:6px 12px;background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:6px">
+          <option value="50">50 derniers</option>
+          <option value="100">100 derniers</option>
+          <option value="200">200 derniers</option>
+        </select>
+        <button onclick="shLoadSignals()" style="padding:6px 14px;background:#2196f3;color:#fff;border:none;border-radius:6px;cursor:pointer">🔄 Actualiser</button>
+        <span style="font-size:0.8em;color:#888">auto 30s</span>
+      </div>
+    </div>
+    <div id="shStats" style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap"></div>
+    <div style="overflow-x:auto">
+      <table id="shTable" style="width:100%;border-collapse:collapse;font-size:0.85em">
+        <thead>
+          <tr style="background:#1a1a1a;border-bottom:2px solid #444">
+            <th style="padding:10px 8px;text-align:left">Date/Heure</th>
+            <th style="padding:10px 8px;text-align:center">Direction</th>
+            <th style="padding:10px 8px;text-align:right">Prix BTC</th>
+            <th style="padding:10px 8px;text-align:center">Confiance</th>
+            <th style="padding:10px 8px;text-align:right">RSI</th>
+            <th style="padding:10px 8px;text-align:right">EMA9/21</th>
+            <th style="padding:10px 8px;text-align:right">MACD hist</th>
+            <th style="padding:10px 8px;text-align:right">ADX</th>
+            <th style="padding:10px 8px;text-align:center">Boll%</th>
+            <th style="padding:10px 8px;text-align:right">Stoch K/D</th>
+            <th style="padding:10px 8px;text-align:right">ATR</th>
+            <th style="padding:10px 8px;text-align:center">Trade</th>
+            <th style="padding:10px 8px;text-align:left">Raison</th>
+          </tr>
+        </thead>
+        <tbody id="shBody">
+          <tr><td colspan="13" style="text-align:center;padding:40px;color:#888">Chargement…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div><!-- /tab-signals -->
+
 <!-- ── Close real trade modal ─────────────────────────────────────────────── -->
 <div id="real-close-modal" class="real-modal-overlay" style="display:none" onclick="realModalBgClick(event)">
   <div class="real-modal">
@@ -861,8 +919,10 @@ Divergence OBV/prix = signal fort de retournement">OBV — Pression volume</div>
 <!-- ══════════  AUTO-TRADE JAVASCRIPT  ══════════════════════════════════════ -->
 <script>
 // ── Auto-trade state ──────────────────────────────────────────────────────────
-let atEnabled = false;
-let atPosInterval = null;
+let atEnabled       = false;
+let atPosInterval   = null;
+let atDiagInterval  = null;
+let shInterval      = null;
 
 // Load status on tab switch + initial load
 document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -870,10 +930,18 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'real') {
       atLoadStatus();
       atLoadPositions();
-      if (!atPosInterval) atPosInterval = setInterval(atLoadPositions, 5000);
+      atLoadDiagnose();
+      if (!atPosInterval)  atPosInterval  = setInterval(atLoadPositions, 5000);
+      if (!atDiagInterval) atDiagInterval = setInterval(() => { atLoadDiagnose(); atLoadStatus(); }, 5000);
     } else {
-      clearInterval(atPosInterval);
-      atPosInterval = null;
+      clearInterval(atPosInterval);  atPosInterval  = null;
+      clearInterval(atDiagInterval); atDiagInterval = null;
+    }
+    if (btn.dataset.tab === 'signals') {
+      shLoadSignals();
+      if (!shInterval) shInterval = setInterval(shLoadSignals, 30000);
+    } else {
+      clearInterval(shInterval); shInterval = null;
     }
   });
 });
@@ -952,7 +1020,10 @@ async function atToggle() {
     if (r.error) {
       atShowResult({ status: 'error', message: r.error });
     } else {
+      // Show the immediate first-check result (from enable response)
+      if (r.firstCheck) atRenderResult(r.firstCheck);
       await atLoadStatus();
+      await atLoadDiagnose();
     }
   } catch (e) {
     atShowResult({ status: 'error', message: 'Erreur réseau: ' + e.message });
@@ -967,6 +1038,7 @@ async function atTrigger() {
     const r = await fetch('/api/futures/trigger', { method: 'POST' }).then(r => r.json());
     atRenderResult(r);
     await atLoadStatus();
+    await atLoadDiagnose();
   } catch (e) {
     atShowResult({ status: 'error', message: 'Erreur réseau: ' + e.message });
   } finally {
@@ -1034,8 +1106,69 @@ function atShowResult(r) {
 // Initial load if "real" tab is active
 if (document.querySelector('.tab-btn[data-tab="real"]')?.classList.contains('active')) {
   atLoadStatus();
+  atLoadDiagnose();
   atLoadPositions();
-  atPosInterval = setInterval(atLoadPositions, 5000);
+  atPosInterval  = setInterval(atLoadPositions, 5000);
+  atDiagInterval = setInterval(() => { atLoadDiagnose(); atLoadStatus(); }, 5000);
+}
+
+// ── Diagnostic panel ──────────────────────────────────────────────────────────
+
+async function atLoadDiagnose() {
+  try {
+    const d = await fetch('/api/futures/diagnose').then(r => r.json());
+    atRenderDiagnose(d);
+  } catch (e) { /* silent */ }
+}
+
+function atRenderDiagnose(d) {
+  const panel = document.getElementById('at-diag');
+  panel.style.display = 'block';
+
+  function row(label, ok, detail) {
+    const icon  = ok ? '✅' : '❌';
+    const color = ok ? '#4caf50' : '#f44336';
+    return `<div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:13px">${icon}</span>
+      <span style="min-width:160px;color:var(--muted)">${label}</span>
+      <span style="color:${color};font-weight:600">${detail}</span>
+    </div>`;
+  }
+
+  const confThreshold = d.signalDirection === 'SHORT'
+    ? `${100 - d.minConfidence}% (SHORT seuil ≤${100 - d.minConfidence}%)`
+    : `${d.minConfidence}% (LONG seuil ≥${d.minConfidence}%)`;
+  const confBadge = d.signalConfidence != null
+    ? `${d.signalConfidence}% — seuil ${confThreshold}`
+    : '—';
+  const dirBadge  = d.signalDirection
+    ? d.signalDirection + (d.directionOk ? '' : ' ← filtre EMA actif')
+    : (d.signalError ? '⚠️ ' + d.signalError : '—');
+  const coolBadge = d.cooldownOk
+    ? 'OK'
+    : `${d.cooldownRemainMin} min restantes`;
+  const posBadge  = d.positionError
+    ? '⚠️ ' + d.positionError
+    : (d.hasOpenPosition ? 'Position ouverte' : 'Aucune position');
+  const priceStr  = d.signalPrice
+    ? `$${d.signalPrice.toLocaleString('fr-FR', {minimumFractionDigits:2})}`
+    : '';
+
+  document.getElementById('at-diag-rows').innerHTML = [
+    row('API configurée',    d.configured,     d.configured ? 'OK' : 'Non configurée'),
+    row('Auto-trade activé', d.enabled,        d.enabled    ? 'Activé' : 'Désactivé'),
+    row('Direction signal',  d.directionOk,    dirBadge + (priceStr ? ' @ ' + priceStr : '')),
+    row('Confiance signal',  d.confidenceOk,   confBadge),
+    row('Cooldown 4h',       d.cooldownOk,     coolBadge),
+    row('Position Binance',  d.positionOk,     posBadge),
+  ].join('');
+
+  const reasonEl = document.getElementById('at-diag-reason');
+  if (d.wouldTrade) {
+    reasonEl.innerHTML = '<span style="color:#4caf50">✅ Toutes les conditions sont remplies — le trade sera placé au prochain cycle !</span>';
+  } else if (d.blockingReason) {
+    reasonEl.innerHTML = `<span style="color:#f7c948">⚠️ Bloqué : ${d.blockingReason}</span>`;
+  }
 }
 
 // ── Live Positions ────────────────────────────────────────────────────────────
@@ -1146,5 +1279,96 @@ function atRenderPositions(positions) {
   document.getElementById('pos-total-margin').textContent  = totalMargin.toFixed(2) + ' $';
   document.getElementById('pos-total-pct').textContent    = (totalPct >= 0 ? '+' : '') + totalPct.toFixed(2) + '%';
   document.getElementById('pos-total-pct').style.color    = totalColor;
+}
+</script>
+<script>
+// ── Signal History ────────────────────────────────────────────────────────────
+function shLoadSignals() {
+    const filter = document.getElementById('sigFilter').value;
+    const limit  = document.getElementById('sigLimit').value;
+    let url = '/api/signals/history';
+    if (filter === 'long')  url = '/api/signals/history/long';
+    if (filter === 'short') url = '/api/signals/history/short';
+    url += '?limit=' + limit;
+
+    fetch(url)
+        .then(r => r.json())
+        .then(data => shRender(data))
+        .catch(e => {
+            document.getElementById('shBody').innerHTML =
+                '<tr><td colspan="13" style="text-align:center;color:#f44">Erreur: ' + e.message + '</td></tr>';
+        });
+}
+
+function shRender(signals) {
+    const total  = signals.length;
+    const longs  = signals.filter(s => s.direction === 'LONG').length;
+    const shorts = signals.filter(s => s.direction === 'SHORT').length;
+    const trades = signals.filter(s => s.tradeTriggered).length;
+    document.getElementById('shStats').innerHTML =
+        '<span style="background:#1b5e20;color:#a5d6a7;padding:6px 14px;border-radius:20px;font-size:0.85em">\uD83D\uDFE2 LONG: ' + longs + '</span>' +
+        '<span style="background:#b71c1c;color:#ef9a9a;padding:6px 14px;border-radius:20px;font-size:0.85em">\uD83D\uDD34 SHORT: ' + shorts + '</span>' +
+        '<span style="background:#1565c0;color:#90caf9;padding:6px 14px;border-radius:20px;font-size:0.85em">\uD83D\uDD35 Total: ' + total + '</span>' +
+        '<span style="background:#4a148c;color:#ce93d8;padding:6px 14px;border-radius:20px;font-size:0.85em">\u26A1 Trades: ' + trades + '</span>';
+
+    if (!signals.length) {
+        document.getElementById('shBody').innerHTML =
+            '<tr><td colspan="13" style="text-align:center;padding:40px;color:#888">Aucun signal d\u00e9tect\u00e9 pour le moment. Les signaux LONG et SHORT sont enregistr\u00e9s automatiquement toutes les 5 minutes par le scheduler.</td></tr>';
+        return;
+    }
+
+    const fmt  = function(v) { return v != null ? v.toFixed(2) : '-'; };
+    const fmtI = function(v) { return v != null ? Math.round(v) : '-'; };
+
+    document.getElementById('shBody').innerHTML = signals.map(function(s) {
+        var isLong    = s.direction === 'LONG';
+        var bgRow     = isLong ? 'rgba(76,175,80,0.07)' : 'rgba(244,67,54,0.07)';
+        var badge     = isLong
+            ? '<span style="background:#1b5e20;color:#a5d6a7;padding:3px 10px;border-radius:12px;font-weight:bold;font-size:0.9em">\u25B2 LONG</span>'
+            : '<span style="background:#b71c1c;color:#ef9a9a;padding:3px 10px;border-radius:12px;font-weight:bold;font-size:0.9em">\u25BC SHORT</span>';
+
+        var conf      = s.confidence;
+        var confColor = conf >= 65 ? '#4caf50' : conf <= 35 ? '#f44336' : '#ff9800';
+
+        var dt = s.detectedAt ? new Date(s.detectedAt).toLocaleString('fr-FR', {
+            day:'2-digit', month:'2-digit', year:'2-digit',
+            hour:'2-digit', minute:'2-digit'
+        }) : '-';
+
+        var emaStyle      = s.ema9 > s.ema21 ? 'color:#4caf50' : 'color:#f44336';
+        var macdHistColor = s.macdHistogram > 0 ? '#4caf50' : '#f44336';
+        var rsiColor      = s.rsi < 30 ? '#4caf50' : s.rsi > 70 ? '#f44336' : '#e0e0e0';
+        var adxStrong     = s.adx > 25 ? 'color:#ffd700' : 'color:#888';
+        var bollPct       = s.bollPosition != null ? Math.round(s.bollPosition * 100) : '-';
+        var bollColor     = s.bollPosition < 0.3 ? '#4caf50' : s.bollPosition > 0.7 ? '#f44336' : '#e0e0e0';
+        var tradeBadge    = s.tradeTriggered
+            ? '<span style="color:#4caf50;font-weight:bold">\u26A1 OUI</span>'
+            : '<span style="color:#888">\u2014</span>';
+
+        var reason;
+        if (s.skipReason) {
+            reason = '<span style="font-size:0.8em;color:#aaa" title="' + s.skipReason + '">' + s.skipReason.substring(0, 40) + (s.skipReason.length > 40 ? '\u2026' : '') + '</span>';
+        } else if (s.tradeTriggered) {
+            reason = '<span style="color:#4caf50;font-size:0.8em">Trade plac\u00e9 \u2705</span>';
+        } else {
+            reason = '<span style="color:#888;font-size:0.8em">AT d\u00e9sactiv\u00e9</span>';
+        }
+
+        return '<tr style="background:' + bgRow + ';border-bottom:1px solid #2a2a2a" title="' + (s.reasoning || '') + '">' +
+            '<td style="padding:8px;white-space:nowrap">' + dt + '</td>' +
+            '<td style="padding:8px;text-align:center">' + badge + '</td>' +
+            '<td style="padding:8px;text-align:right;font-weight:bold">' + (s.price ? s.price.toLocaleString('fr-FR', {minimumFractionDigits:0, maximumFractionDigits:0}) + ' $' : '-') + '</td>' +
+            '<td style="padding:8px;text-align:center;color:' + confColor + ';font-weight:bold">' + conf + '%</td>' +
+            '<td style="padding:8px;text-align:right;color:' + rsiColor + '">' + fmt(s.rsi) + '</td>' +
+            '<td style="padding:8px;text-align:right;' + emaStyle + '">' + fmtI(s.ema9) + ' / ' + fmtI(s.ema21) + '</td>' +
+            '<td style="padding:8px;text-align:right;color:' + macdHistColor + '">' + (s.macdHistogram ? s.macdHistogram.toFixed(4) : '-') + '</td>' +
+            '<td style="padding:8px;text-align:right;' + adxStrong + '">' + fmt(s.adx) + '</td>' +
+            '<td style="padding:8px;text-align:center;color:' + bollColor + '">' + bollPct + '%</td>' +
+            '<td style="padding:8px;text-align:right">' + fmtI(s.stochK) + ' / ' + fmtI(s.stochD) + '</td>' +
+            '<td style="padding:8px;text-align:right;color:#888">' + fmtI(s.atr) + '</td>' +
+            '<td style="padding:8px;text-align:center">' + tradeBadge + '</td>' +
+            '<td style="padding:8px">' + reason + '</td>' +
+            '</tr>';
+    }).join('');
 }
 </script>

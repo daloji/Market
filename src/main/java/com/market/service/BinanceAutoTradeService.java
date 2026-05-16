@@ -38,6 +38,7 @@ public class BinanceAutoTradeService {
     @Inject CryptoAnalysisService analysisService;
     @Inject BinanceFuturesService  futuresService;
     @Inject TradeService           tradeService;
+    @Inject SignalHistoryService   signalHistoryService;
 
     // Default config from application.properties
     @ConfigProperty(name = "market.binance.futures.auto-trade.min-confidence", defaultValue = "70")
@@ -120,32 +121,150 @@ public class BinanceAutoTradeService {
 
         // Direction filter
         if (!"LONG".equals(dir) && !"SHORT".equals(dir))
-            return store(AutoTradeResult.skipped("Signal WAIT — confiance " + conf + "%"));
+            return store(AutoTradeResult.skipped(
+                "Signal WAIT (confiance=" + conf + "%) — le signal doit atteindre ≥" + mc + "% pour LONG ou ≤" + (100 - mc) + "% pour SHORT, ET passer le filtre EMA de tendance"));
 
-        // Confidence filter
-        if (conf < mc)
-            return store(AutoTradeResult.skipped("Confiance " + conf + "% < seuil " + mc + "%"));
+        // Confidence filter — symmetric:
+        //   LONG  needs conf >= mc        (e.g. conf >= 60)
+        //   SHORT needs conf <= (100-mc)  (e.g. conf <= 40)
+        boolean confOk = "LONG".equals(dir) ? conf >= mc : conf <= (100 - mc);
+        if (!confOk) {
+            if ("LONG".equals(dir))
+                return store(AutoTradeResult.skipped(
+                    "LONG confiance " + conf + "% < seuil " + mc + "%"));
+            else
+                return store(AutoTradeResult.skipped(
+                    "SHORT confiance " + conf + "% > seuil " + (100 - mc) + "%"));
+        }
 
         // Cooldown filter
         if (lastTradeAt != null) {
             long elapsed = Instant.now().toEpochMilli() - lastTradeAt.toEpochMilli();
             if (elapsed < COOLDOWN_MS) {
                 long remain = (COOLDOWN_MS - elapsed) / 60_000;
-                return store(AutoTradeResult.skipped("Cooldown actif — " + remain + " min restantes"));
+                AutoTradeResult r = AutoTradeResult.skipped(
+                    "Cooldown actif — prochain trade possible dans " + remain + " min (4h entre chaque trade)");
+                signalHistoryService.record(signal, false, r.message);
+                return store(r);
             }
         }
 
         // Check for open position on Binance
         try {
             if (hasOpenPosition()) {
-                return store(AutoTradeResult.skipped("Position déjà ouverte sur Binance"));
+                AutoTradeResult r = AutoTradeResult.skipped("Position déjà ouverte sur Binance — fermez-la avant d'en ouvrir une nouvelle");
+                signalHistoryService.record(signal, false, r.message);
+                return store(r);
             }
         } catch (Exception e) {
             // Non-blocking: position check failure doesn't stop the trade
             LOG.warnf("[AutoTrade] Impossible de vérifier la position: %s — on continue", e.getMessage());
         }
 
-        return store(execute(signal));
+        AutoTradeResult result = execute(signal);
+        signalHistoryService.record(signal, "placed".equals(result.status),
+            "placed".equals(result.status) ? null : result.message);
+        return store(result);
+    }
+
+    /**
+     * Returns a full diagnostic of all conditions that must pass for a trade to be placed.
+     * Useful to understand why no trade is being triggered.
+     */
+    public DiagResult diagnose() {
+        DiagResult d = new DiagResult();
+        d.enabled       = enabled.get();
+        d.configured    = futuresService.isConfigured();
+        d.minConfidence = getMinConfidence();
+        d.slPct         = getSlPct();
+        d.tpPct         = getTpPct();
+        d.leverage      = getLeverage();
+        d.amountUsdt    = getAmountUsdt();
+
+        if (lastTradeAt != null) {
+            long elapsed = Instant.now().toEpochMilli() - lastTradeAt.toEpochMilli();
+            d.lastTradeMs        = lastTradeAt.toEpochMilli();
+            d.cooldownRemainMin  = Math.max(0, (COOLDOWN_MS - elapsed) / 60_000);
+            d.cooldownOk         = elapsed >= COOLDOWN_MS;
+        } else {
+            d.cooldownOk = true;
+        }
+
+        try {
+            BitcoinSignal sig = analysisService.getSignal();
+            if (sig.error != null) {
+                d.signalError = sig.error;
+            } else {
+                d.signalDirection  = sig.direction;
+                d.signalConfidence = sig.confidence;
+                d.signalPrice      = sig.currentPrice;
+                d.directionOk      = "LONG".equals(sig.direction) || "SHORT".equals(sig.direction);
+                // LONG needs conf >= mc; SHORT needs conf <= (100-mc)
+                d.confidenceOk = d.directionOk && (
+                    "LONG".equals(sig.direction)  ? sig.confidence >= d.minConfidence :
+                    "SHORT".equals(sig.direction) ? sig.confidence <= (100 - d.minConfidence) : false
+                );
+            }
+        } catch (Exception e) {
+            d.signalError = e.getMessage();
+        }
+
+        try {
+            d.hasOpenPosition = hasOpenPosition();
+            d.positionOk = !d.hasOpenPosition;
+        } catch (Exception e) {
+            d.positionOk  = false;
+            d.positionError = e.getMessage();
+        }
+
+        d.wouldTrade = d.enabled && d.configured && d.directionOk
+                && d.confidenceOk && d.cooldownOk && d.positionOk;
+
+        // Compute the first blocking reason
+        if (!d.enabled)            d.blockingReason = "Auto-trade désactivé";
+        else if (!d.configured)    d.blockingReason = "Clé API Binance Futures non configurée";
+        else if (d.signalError != null) d.blockingReason = "Erreur signal: " + d.signalError;
+        else if (!d.directionOk)   d.blockingReason = "Signal WAIT (direction=" + d.signalDirection + ", conf=" + d.signalConfidence + "%) — filtre EMA de tendance actif";
+        else if (!d.confidenceOk) {
+            boolean isLong = "LONG".equals(d.signalDirection);
+            d.blockingReason = isLong
+                ? "LONG confiance " + d.signalConfidence + "% < seuil " + d.minConfidence + "%"
+                : "SHORT confiance " + d.signalConfidence + "% > seuil " + (100 - d.minConfidence) + "%";
+        }
+        else if (!d.cooldownOk)    d.blockingReason = "Cooldown actif — " + d.cooldownRemainMin + " min restantes";
+        else if (!d.positionOk)    d.blockingReason = d.positionError != null
+                    ? "Impossible de vérifier la position: " + d.positionError
+                    : "Position déjà ouverte sur Binance";
+        else                       d.blockingReason = null; // all clear
+
+        return d;
+    }
+
+    public static class DiagResult {
+        public boolean enabled;
+        public boolean configured;
+        public int     minConfidence;
+        public double  slPct, tpPct;
+        public int     leverage;
+        public double  amountUsdt;
+        // Signal
+        public String  signalDirection;
+        public int     signalConfidence;
+        public double  signalPrice;
+        public String  signalError;
+        public boolean directionOk;
+        public boolean confidenceOk;
+        // Cooldown
+        public boolean cooldownOk;
+        public long    cooldownRemainMin;
+        public long    lastTradeMs;
+        // Position
+        public boolean hasOpenPosition;
+        public boolean positionOk;
+        public String  positionError;
+        // Summary
+        public boolean wouldTrade;
+        public String  blockingReason;
     }
 
     // ── Trade execution ────────────────────────────────────────────────────────

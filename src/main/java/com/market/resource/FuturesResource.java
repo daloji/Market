@@ -60,7 +60,19 @@ public class FuturesResource {
                 "Ajoutez market.binance.futures.api-key et market.binance.futures.secret dans application.properties.")).build();
         }
         autoTrade.enable();
-        return Response.ok(Map.of("enabled", true, "message", "Auto-trade activé ✅")).build();
+        // Immediately run a check — user gets instant feedback, no need to wait 5 min scheduler
+        BinanceAutoTradeService.AutoTradeResult first = autoTrade.checkAndTrade();
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("enabled",    true);
+        r.put("message",    "Auto-trade activé ✅");
+        r.put("firstCheck", first);
+        return Response.ok(r).build();
+    }
+
+    /** Full diagnostic: shows exactly why no trade is placed. */
+    @GET @Path("/diagnose")
+    public BinanceAutoTradeService.DiagResult diagnose() {
+        return autoTrade.diagnose();
     }
 
     @POST @Path("/disable")

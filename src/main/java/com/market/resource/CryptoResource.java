@@ -4,7 +4,7 @@ import com.market.client.BinanceClient;
 import com.market.model.BitcoinSignal;
 import com.market.model.CandleDTO;
 import com.market.service.CryptoAnalysisService;
-import com.market.service.WhatsAppAlertService;
+import com.market.service.TelegramAlertService;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
 public class CryptoResource {
 
     @Inject CryptoAnalysisService cryptoService;
-    @Inject WhatsAppAlertService  whatsAppAlertService;
+    @Inject TelegramAlertService  telegramAlertService;
 
     @Inject @RestClient BinanceClient binanceClient;
 
@@ -51,25 +51,24 @@ public class CryptoResource {
     }
 
     /**
-     * Test endpoint — sends a WhatsApp alert with the current signal immediately,
+     * Test endpoint — sends a Telegram alert with the current signal immediately,
      * bypassing the conviction/cooldown filters.
-     * Call: POST /api/crypto/btc/whatsapp-test
+     * Call: POST /api/crypto/btc/telegram-test
      */
     @POST
-    @Path("/btc/whatsapp-test")
-    public Response testWhatsApp() {
-        if (!whatsAppAlertService.isEnabled()) {
+    @Path("/btc/telegram-test")
+    public Response testTelegram() {
+        if (!telegramAlertService.isEnabled()) {
             return Response.status(Response.Status.SERVICE_UNAVAILABLE)
                     .entity(Map.of("error",
-                        "WhatsApp not configured. Set market.whatsapp.phone and market.whatsapp.apikey."))
+                        "Telegram not configured. Set market.telegram.bot-token and market.telegram.chat-id in application.properties."))
                     .build();
         }
         BitcoinSignal signal = cryptoService.getSignal();
         if (signal.error != null) {
             return Response.serverError().entity(Map.of("error", signal.error)).build();
         }
-        // Force-send bypassing filters
-        whatsAppAlertService.sendTest(signal);
+        telegramAlertService.sendTest(signal);
         return Response.ok(Map.of(
             "status",     "sent",
             "direction",  signal.direction,

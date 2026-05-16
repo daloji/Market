@@ -38,7 +38,7 @@ public class CryptoAnalysisService {
     TechnicalAnalysisService ta;
 
     @Inject
-    WhatsAppAlertService whatsAppAlertService;
+    TelegramAlertService telegramAlertService;
 
     // Simple cache to avoid hammering Binance on every UI refresh
     private BitcoinSignal cached;
@@ -52,7 +52,7 @@ public class CryptoAnalysisService {
         }
         BitcoinSignal signal = compute();
         if (signal.error == null) {
-            whatsAppAlertService.notifyIfNeeded(signal);
+            telegramAlertService.notifyIfNeeded(signal);
             cached   = signal;
             cachedAt = now;
         } else if (cached != null) {
