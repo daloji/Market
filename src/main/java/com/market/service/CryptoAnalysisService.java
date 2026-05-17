@@ -249,12 +249,13 @@ public class CryptoAnalysisService {
                 raw_score += tf5mScore;
             }
 
-            // ── Futures Volumetrics (±15 pts) ────────────────────────────────
+            // ── Futures Volumetrics (±25 pts) ────────────────────────────────
             int    volScore      = 0;
             double fundingRate   = 0;
             String fundingBias   = "NEUTRAL";
             double openInterest  = 0;
             String oiTrend       = "NEUTRAL";
+            int    oiScore       = 0;
             double volumeDelta   = 0;
             String vdTrend       = "NEUTRAL";
 
@@ -293,6 +294,50 @@ public class CryptoAnalysisService {
                     openInterest  = oi.path("openInterest").asDouble(0);
                 } catch (Exception e) { LOG.debugf("OI error: %s", e.getMessage()); }
             }
+
+            // 4) OI Trend from history (±10 pts) — /fapi/v1/openInterestHist
+            // Compare recent 2h OI average vs older 4h OI average.
+            // Rising OI + price rising  = new longs being opened    → BULL confirmation
+            // Rising OI + price falling = new shorts being opened   → BEAR confirmation
+            // Falling OI + any direction = positions closing        → trend weakening
+            try {
+                String oiHistJson = futuresService.getOpenInterestHistory("BTCUSDT", "1h", 6);
+                JsonNode oiHist   = MAPPER.readTree(oiHistJson);
+                if (oiHist.isArray() && oiHist.size() >= 4) {
+                    // recent = last 2 entries, older = first 4 entries
+                    double recentOi = 0, olderOi = 0;
+                    int sz = oiHist.size();
+                    for (int i = sz - 2; i < sz; i++)
+                        recentOi += oiHist.get(i).path("sumOpenInterest").asDouble(0);
+                    recentOi /= 2.0;
+                    for (int i = 0; i < sz - 2; i++)
+                        olderOi += oiHist.get(i).path("sumOpenInterest").asDouble(0);
+                    olderOi /= (sz - 2.0);
+
+                    double oiChangePct = olderOi > 0 ? (recentOi - olderOi) / olderOi * 100 : 0;
+                    boolean priceRising = closes[n - 1] > closes[n - 4]; // price direction over ~3h
+
+                    if (oiChangePct > 0.3) {          // OI rising meaningfully
+                        if (priceRising) {
+                            oiTrend = "RISING_BULL";  // new longs → LONG confirmation
+                            oiScore = 10;
+                        } else {
+                            oiTrend = "RISING_BEAR";  // new shorts → SHORT confirmation
+                            oiScore = -10;
+                        }
+                    } else if (oiChangePct < -0.3) {  // OI falling meaningfully
+                        if (priceRising) {
+                            oiTrend = "FALLING_BULL"; // shorts closing → weaker LONG
+                            oiScore = 3;
+                        } else {
+                            oiTrend = "FALLING_BEAR"; // longs closing → weaker SHORT
+                            oiScore = -3;
+                        }
+                    }
+                    // else: flat OI = NEUTRAL, 0 pts
+                    volScore += oiScore;
+                }
+            } catch (Exception e) { LOG.debugf("OI history error: %s", e.getMessage()); }
 
             raw_score += volScore;
 
@@ -429,8 +474,8 @@ public class CryptoAnalysisService {
                     (ms.score != 0 ? " (score" + (ms.score > 0 ? "+" : "") + ms.score + ")" : ""));
 
             // Volumetrics reasoning
-            reasons.add(String.format("Vol.delta %s (%.2f BTC) · Funding %.4f%% (%s) · score%+d",
-                    vdTrend, volumeDelta, fundingRate * 100, fundingBias, volScore));
+            reasons.add(String.format("Vol.delta %s (%.2f BTC) · Funding %.4f%% (%s) · OI %s (score%+d) · total%+d",
+                    vdTrend, volumeDelta, fundingRate * 100, fundingBias, oiTrend, oiScore, volScore));
 
             // Volatility filter reasoning
             reasons.add(String.format("Volatilité %s (ATR=%.2f%%) · BB %s (%.1f%%)%s · score%+d",
@@ -499,6 +544,7 @@ public class CryptoAnalysisService {
             s.fundingBias      = fundingBias;
             s.openInterest     = openInterest;
             s.oiTrend          = oiTrend;
+            s.oiScore          = oiScore;
             s.volumeDelta      = volumeDelta;
             s.volumeDeltaTrend = vdTrend;
             s.volScore         = volScore;

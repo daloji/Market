@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.time.Instant;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -79,11 +80,13 @@ class BinanceAutoTradeServiceTest {
         when(analysisService.getSignal()).thenReturn(waitSignal());
         when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
         when(futuresService.setLeverage(any(), anyInt())).thenReturn("{}");
-        when(futuresService.placeMarketOrder(any(), any(), any())).thenReturn("{\"avgPrice\":\"100000\"}");
+        when(futuresService.placeMarketOrder(any(), any(), any())).thenReturn("{\"avgPrice\":\"100000\",\"executedQty\":\"0.001\"}");
         when(futuresService.closeWithMarket(any(), any(), any())).thenReturn("{\"avgPrice\":\"100000\"}");
         when(futuresService.placeCloseOrder(any(), any(), any(), anyDouble(), any())).thenReturn("{}");
         when(futuresService.cancelAllOrders(any())).thenReturn("{}");
-        when(tradeService.openTrade(anyDouble(), any(), anyInt(), anyDouble(), anyDouble(),
+        when(futuresService.getOpenOrders(any())).thenReturn("[{\"type\":\"STOP_MARKET\"},{\"type\":\"TAKE_PROFIT_MARKET\"}]");
+        when(futuresService.getAvailableBalance()).thenReturn(500.0); // sufficient balance by default
+        when(tradeService.openTrade(anyDouble(), anyDouble(), any(), anyInt(), anyDouble(), anyDouble(),
                 anyDouble(), anyDouble(), anyDouble(), any(), any(), any(), any()))
                 .thenReturn(new Trade());
     }
@@ -115,6 +118,9 @@ class BinanceAutoTradeServiceTest {
         s.reasoning = "test";
         return s;
     }
+
+    private BitcoinSignal longSignal(int conf) { return longSignal(conf, 100000.0); }
+    private BitcoinSignal shortSignal(int conf) { return shortSignal(conf, 100000.0); }
 
     private BitcoinSignal longSignal(int conf, double price) {
         BitcoinSignal s = new BitcoinSignal();
@@ -269,6 +275,28 @@ class BinanceAutoTradeServiceTest {
         svc.checkAndTrade(); // confirmation 1/2
         BinanceAutoTradeService.AutoTradeResult rShort = svc.checkAndTrade(); // confirmation 2/2
         assertEquals("placed", rShort.status, "SHORT should be placed when LONG already open (hedge): " + rShort.message);
+    }
+
+    @Test
+    void checkAndTrade_insufficientBalance_isSkipped() throws Exception {
+        svc.enable();
+        when(analysisService.getSignal()).thenReturn(longSignal(75, 100000));
+        when(futuresService.getAvailableBalance()).thenReturn(10.0); // 10 USDT < 50 USDT mise
+        // Seed confirmation
+        svc.checkAndTrade();
+        BinanceAutoTradeService.AutoTradeResult r = svc.checkAndTrade();
+        assertEquals("skipped", r.status, "Should be skipped when balance < amount");
+        assertTrue(r.message.contains("Solde insuffisant"), "Should mention insufficient balance: " + r.message);
+    }
+
+    @Test
+    void checkAndTrade_sufficientBalance_isPlaced() throws Exception {
+        svc.enable();
+        when(analysisService.getSignal()).thenReturn(longSignal(75, 100000));
+        when(futuresService.getAvailableBalance()).thenReturn(200.0); // 200 USDT >= 50 USDT
+        svc.checkAndTrade();
+        BinanceAutoTradeService.AutoTradeResult r = svc.checkAndTrade();
+        assertEquals("placed", r.status, "Should be placed with sufficient balance: " + r.message);
     }
 
     @Test
@@ -611,5 +639,85 @@ class BinanceAutoTradeServiceTest {
         BinanceAutoTradeService.AutoTradeResult r = svc.checkAndTrade();
         assertFalse(r.message != null && r.message.contains("4h") && r.message.contains("BULL"),
                 "Weak 4h BULL should not block SHORT: " + r.message);
+    }
+
+    // ── Cooldown ──────────────────────────────────────────────────────────────
+
+    @Test
+    void checkAndTrade_inCooldown_isSkipped() throws Exception {
+        svc.enable();
+        setLastTradeAt(Instant.now()); // just traded → cooldown active
+        when(analysisService.getSignal()).thenReturn(longSignal(65));
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
+
+        BinanceAutoTradeService.AutoTradeResult r = svc.checkAndTrade();
+        assertEquals("skipped", r.status);
+        assertTrue(r.message.contains("cooldown") || r.message.contains("Cooldown"),
+                "Expected cooldown message but got: " + r.message);
+    }
+
+    @Test
+    void checkAndTrade_afterCooldownExpired_executes() throws Exception {
+        svc.enable();
+        setLastTradeAt(Instant.now().minusMillis(COOLDOWN_MS_FOR_TEST + 1000));
+        when(analysisService.getSignal()).thenReturn(longSignal(70));
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
+
+        svc.checkAndTrade(); // confirmation 1/2
+        BinanceAutoTradeService.AutoTradeResult r = svc.checkAndTrade(); // confirmation 2/2 → executes
+        assertNotEquals("skipped", r.status, "Trade should execute after cooldown expires");
+        assertNotEquals("error", r.status);
+    }
+
+    // ── Daily loss limit ──────────────────────────────────────────────────────
+
+    @Test
+    void diagnose_dailyLimitOk_whenNoTrades() {
+        svc.enable();
+        when(analysisService.getSignal()).thenReturn(longSignal(70));
+        // With no closed trades in H2, getDailyPnl() returns 0.0 → limit not reached
+        BinanceAutoTradeService.DiagResult d = svc.diagnose();
+        assertTrue(d.dailyLimitOk, "With no DB trades, daily limit should be OK");
+        assertEquals(100.0, d.dailyLossLimit, 0.01);
+        assertEquals(0.0, d.dailyPnl, 10.0, "Daily PnL should be near 0 with no trades");
+    }
+
+    // ── Emergency close ───────────────────────────────────────────────────────
+
+    @Test
+    void emergencyCloseAll_disablesBotAndCancelsOrders() throws Exception {
+        svc.enable();
+        assertTrue(svc.isEnabled());
+        when(futuresService.cancelAllOrders(any())).thenReturn("{}");
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
+
+        Map<String, Object> result = svc.emergencyCloseAll();
+
+        assertFalse(svc.isEnabled(), "Bot must be disabled after kill switch");
+        assertNotNull(result);
+        assertEquals("ok", result.get("status"));
+    }
+
+    @Test
+    void emergencyCloseAll_withApiFailure_returnsPartialStatus() throws Exception {
+        svc.enable();
+        when(futuresService.cancelAllOrders(any())).thenThrow(new RuntimeException("API error"));
+        when(futuresService.getPositionRisk(any())).thenThrow(new RuntimeException("API error"));
+
+        Map<String, Object> result = svc.emergencyCloseAll();
+
+        assertFalse(svc.isEnabled(), "Bot must still be disabled after kill switch even on API failure");
+        assertNotNull(result);
+        assertEquals("partial", result.get("status"));
+    }
+
+    // ── Close position ────────────────────────────────────────────────────────
+
+    @Test
+    void closePosition_whenNoActivePosition_throwsException() throws Exception {
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
+
+        assertThrows(RuntimeException.class, () -> svc.closePosition("BTCUSDT"),
+                "Should throw when no position is open");
     }
 }

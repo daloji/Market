@@ -104,17 +104,20 @@ public class TelegramAlertService {
      * Sends a trade placement notification (called immediately when a trade is placed).
      * Always fires — no cooldown/direction filter.
      */
-    public void sendTradeAlert(String dir, int conf, double price, double sl, double tp,
+    public void sendTradeAlert(String dir, int conf, double price, double sl,
+                               double tp1, double tp2, double tp3,
                                double slPct, double tpPct, int leverage, double amountUsdt) {
         if (!isEnabled()) return;
         String emoji = "LONG".equals(dir) ? "🟢📈 LONG" : "🔴📉 SHORT";
-        String text = String.format(
+        String text = String.format(java.util.Locale.US,
             "%s *BTC/USDT — Trade ouvert*\n" +
             "Entrée : $%,.2f | Levier : x%d | Mise : $%.0f\n" +
-            "SL : $%,.2f (%.1f%%) | TP : $%,.2f (%.1f%%)\n" +
+            "SL : $%,.2f (%.1f%%)\n" +
+            "TP1 : $%,.2f (%.1f%%) · TP2 : $%,.2f · TP3 : $%,.2f\n" +
             "Conviction : %d%%",
             emoji, price, leverage, amountUsdt,
-            sl, slPct, tp, tpPct,
+            sl, slPct,
+            tp1, tpPct, tp2, tp3,
             conf
         );
         send(text);
@@ -126,7 +129,7 @@ public class TelegramAlertService {
     public void sendCloseAlert(String dir, String reason, double price, double pnl) {
         if (!isEnabled()) return;
         String emoji = pnl >= 0 ? "✅" : "❌";
-        String text = String.format(
+        String text = String.format(java.util.Locale.US,
             "%s *BTC/USDT — Position fermée*\n" +
             "Direction : %s | Raison : %s\n" +
             "Prix de clôture : $%,.2f\n" +

@@ -168,6 +168,8 @@ public class FuturesResource {
                             .ifPresent(t -> {
                                 view.put("sl",       t.sl);
                                 view.put("tp1",      t.tp1);
+                                view.put("tp2",      t.tp2);
+                                view.put("tp3",      t.tp3);
                                 view.put("tradeId",  t.id);
                                 view.put("openedAt", t.openedAt != null ? t.openedAt.toEpochMilli() : 0);
                             });
@@ -193,6 +195,22 @@ public class FuturesResource {
             return Response.status(400).entity(Map.of("error", "Clé API Binance Futures non configurée")).build();
         try {
             Map<String, Object> result = autoTrade.closePosition(symbol);
+            return Response.ok(result).build();
+        } catch (Exception e) {
+            return Response.serverError().entity(Map.of("error", e.getMessage())).build();
+        }
+    }
+
+    /**
+     * EMERGENCY KILL SWITCH — disables the bot, cancels all SL/TP orders,
+     * closes all open BTCUSDT positions with MARKET orders.
+     */
+    @POST @Path("/emergency-close")
+    public Response emergencyClose() {
+        if (!futures.isConfigured())
+            return Response.status(400).entity(Map.of("error", "Clé API Binance Futures non configurée")).build();
+        try {
+            Map<String, Object> result = autoTrade.emergencyCloseAll();
             return Response.ok(result).build();
         } catch (Exception e) {
             return Response.serverError().entity(Map.of("error", e.getMessage())).build();

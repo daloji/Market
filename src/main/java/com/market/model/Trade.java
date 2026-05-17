@@ -20,6 +20,8 @@ public class Trade extends PanacheEntity {
     public int    leverage;
     public double entryPrice;
     public double feeRate;
+    /** BTC quantity actually filled (for REAL trades). */
+    public double quantity;
 
     public double tp1;
     public double tp2;

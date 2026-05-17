@@ -115,26 +115,6 @@
           </execution>
         </executions>
       </plugin>
-
-               <plugin>
-      <groupId>org.jacoco</groupId>
-        <artifactId>jacoco-maven-plugin</artifactId>
-        <version>0.8.10</version>
-        <executions>
-            <execution>
-            <goals>
-                <goal>prepare-agent</goal>
-            </goals>
-            </execution>
-            <execution>
-            <id>report</id>
-            <phase>verify</phase>
-            <goals>
-                <goal>report</goal>
-            </goals>
-            </execution>
-        </executions>
-    </plugin>
       <plugin>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>${compiler-plugin.version}</version>
@@ -148,10 +128,55 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>
         <configuration>
+          <!-- @{argLine} passes the JaCoCo agent to the test JVM (late-binding, set by prepare-agent) -->
+          <argLine>@{argLine}</argLine>
           <systemPropertyVariables>
             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
           </systemPropertyVariables>
         </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>0.8.12</version>
+        <executions>
+          <!-- Attaches JaCoCo agent to the test JVM via argLine property -->
+          <execution>
+            <id>jacoco-prepare</id>
+            <goals><goal>prepare-agent</goal></goals>
+          </execution>
+          <!-- Generates HTML/XML report after tests: target/site/jacoco/index.html -->
+          <execution>
+            <id>jacoco-report</id>
+            <phase>test</phase>
+            <goals><goal>report</goal></goals>
+          </execution>
+          <!--
+            HOW TO ENABLE ACCURATE COVERAGE ENFORCEMENT (~80%)
+            ====================================================
+            Standard JaCoCo cannot measure @ApplicationScoped CDI beans or PanacheEntity
+            models because Quarkus augments/transforms their bytecode at build time.
+            For accurate per-class coverage, add the quarkus-jacoco extension:
+
+              <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-jacoco</artifactId>
+                <scope>test</scope>
+              </dependency>
+
+            Then add to application.properties:
+              %test.quarkus.jacoco.data-file=target/jacoco-quarkus.exec
+              %test.quarkus.jacoco.reuse-data-file=false
+              %test.quarkus.jacoco.report=false
+
+            And re-add a jacoco-check execution pointing to that exec file with
+              <dataFile>${project.build.directory}/jacoco-quarkus.exec</dataFile>
+            and <minimum>0.80</minimum>.
+
+            NOTE: quarkus-jacoco:3.8.1 was not available in the local Maven cache
+            at implementation time (no network access). Download it when online.
+          -->
+        </executions>
       </plugin>
     </plugins>
   </build>

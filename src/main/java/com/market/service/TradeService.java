@@ -29,6 +29,15 @@ public class TradeService {
                            double entryPrice, double feeRate, double atr,
                            double customSl, double customTp,
                            String tradeType, String broker, String symbol, String note) {
+        return openTrade(amount, 0, direction, leverage, entryPrice, feeRate, atr,
+                customSl, customTp, tradeType, broker, symbol, note);
+    }
+
+    @Transactional
+    public Trade openTrade(double amount, double quantity, Trade.Direction direction, int leverage,
+                           double entryPrice, double feeRate, double atr,
+                           double customSl, double customTp,
+                           String tradeType, String broker, String symbol, String note) {
 
         double sign = direction == Trade.Direction.LONG ? 1 : -1;
         double liqFactor = direction == Trade.Direction.LONG
@@ -38,6 +47,7 @@ public class TradeService {
         Trade trade = new Trade();
         trade.direction  = direction;
         trade.amount     = amount;
+        trade.quantity   = quantity;
         trade.leverage   = leverage;
         trade.entryPrice = entryPrice;
         trade.feeRate    = feeRate;
@@ -54,8 +64,8 @@ public class TradeService {
         trade.symbol     = (symbol != null && !symbol.isBlank()) ? symbol : "BTC/USDT";
         trade.note       = note;
         trade.persist();
-        LOG.infof("[%s] Trade opened: %s ×%d at %.2f SL=%.2f TP=%.2f (id=%d)",
-                trade.tradeType, direction, leverage, entryPrice, trade.sl, trade.tp1, trade.id);
+        LOG.infof("[%s] Trade opened: %s ×%d at %.2f SL=%.2f TP=%.2f qty=%.4f (id=%d)",
+                trade.tradeType, direction, leverage, entryPrice, trade.sl, trade.tp1, quantity, trade.id);
         return trade;
     }
 

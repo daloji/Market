@@ -96,8 +96,10 @@ public class BitcoinSignal {
 
     /** Current open interest in BTC */
     public double  openInterest;
-    /** "RISING" / "FALLING" / "NEUTRAL" */
+    /** "RISING_BULL" / "RISING_BEAR" / "FALLING_BULL" / "FALLING_BEAR" / "NEUTRAL" */
     public String  oiTrend;
+    /** OI trend score contribution (±10) */
+    public int     oiScore;
 
     /**
      * Net volume delta over last 5 candles (positive = net buying, negative = net selling).
@@ -107,7 +109,7 @@ public class BitcoinSignal {
     /** "POSITIVE" / "NEGATIVE" / "NEUTRAL" */
     public String  volumeDeltaTrend;
 
-    /** Aggregate score contribution from volumetrics (±15) */
+    /** Aggregate score contribution from volumetrics (±25) */
     public int     volScore;
 
     // ── Volatility Filter (P4) ────────────────────────────────────────────────

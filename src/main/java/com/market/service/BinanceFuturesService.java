@@ -135,6 +135,15 @@ public class BinanceFuturesService {
     }
 
     /**
+     * Returns all open orders for a symbol (GET /fapi/v1/openOrders).
+     * Each order has: orderId, type (STOP_MARKET, TAKE_PROFIT_MARKET...), side, stopPrice, status.
+     */
+    public String getOpenOrders(String symbol) throws Exception {
+        String params = "symbol=" + symbol + "&timestamp=" + ts();
+        return get("/fapi/v1/openOrders", params + "&signature=" + sign(params));
+    }
+
+    /**
      * Returns current position risk for a symbol (GET /fapi/v2/positionRisk).
      * positionAmt > 0 → long; < 0 → short; = 0 → no position.
      */
@@ -152,6 +161,25 @@ public class BinanceFuturesService {
         return get("/fapi/v2/account", params + "&signature=" + sign(params));
     }
 
+    /**
+     * Returns available USDT balance for futures trading.
+     * Parses availableBalance from /fapi/v2/account assets array.
+     * Returns -1 if parsing fails.
+     */
+    public double getAvailableBalance() throws Exception {
+        String json = getAccount();
+        com.fasterxml.jackson.databind.JsonNode root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+        com.fasterxml.jackson.databind.JsonNode assets = root.path("assets");
+        if (assets.isArray()) {
+            for (com.fasterxml.jackson.databind.JsonNode asset : assets) {
+                if ("USDT".equals(asset.path("asset").asText())) {
+                    return asset.path("availableBalance").asDouble(-1);
+                }
+            }
+        }
+        return -1;
+    }
+
     // ── Public market data (no auth, always live fapi.binance.com) ────────────
 
     /**
@@ -161,6 +189,17 @@ public class BinanceFuturesService {
      */
     public String getOpenInterest(String symbol) throws Exception {
         return getPublic("/fapi/v1/openInterest", "symbol=" + symbol);
+    }
+
+    /**
+     * Returns open interest history for a symbol.
+     * GET /futures/data/openInterestHist?symbol=BTCUSDT&period=1h&limit=N
+     * Returns array of {"sumOpenInterest":"...","sumOpenInterestValue":"...","timestamp":...}
+     * Valid periods: 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
+     */
+    public String getOpenInterestHistory(String symbol, String period, int limit) throws Exception {
+        return getPublic("/futures/data/openInterestHist",
+                "symbol=" + symbol + "&period=" + period + "&limit=" + limit);
     }
 
     /**

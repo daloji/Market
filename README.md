@@ -14,7 +14,7 @@ Application **Quarkus 3.8** de surveillance boursière qui récupère les donné
 6. [Indicateur de tendance](#-indicateur-de-tendance)
 7. [Dashboard web](#-dashboard-web)
 8. [API REST](#-api-rest)
-9. [Bitcoin / Crypto](#-bitcoin--crypto)
+9. [Bot Trading BTC/USDT Futures](#-bot-de-trading-btcusdt-futures-binance)
 10. [Configuration](#-configuration)
 11. [Déploiement](#-déploiement)
 12. [Structure du projet](#-structure-du-projet)
@@ -296,23 +296,176 @@ Chaque carte affiche :
 
 ---
 
-## ₿ Bitcoin / Crypto
+## ₿ Bot de Trading BTC/USDT Futures (Binance)
 
-Page **http://localhost:8080/bitcoin.html** — simulateur de trading BTC avec effet de levier.
+Page **http://localhost:8080/bitcoin.html** — dashboard de trading automatique BTC/USDT perpetuel sur Binance Futures.
 
-### Signal intraday BTC
-- Données Binance (public, sans clé API)
-- Indicateurs : RSI, MACD, Bollinger Bands, ATR
-- Niveaux calculés automatiquement :
-  - **TP1** = entrée + 1× ATR, **TP2** = entrée + 2× ATR, **TP3** = entrée + 3× ATR
-  - **SL** = entrée ± 1.5× ATR
-  - **Liquidation** ≈ entrée ± (100% / levier)
+---
 
-### Calcul du P&L
+### 🏗️ Architecture du bot
+
 ```
-pnlUsd = mise × (ΔPrix / prixEntrée) × levier
+Binance API (toutes les 5 min via @Scheduled)
+         │
+         ▼
+CryptoAnalysisService  ──→  BitcoinSignal (direction + confidence 0–100%)
+         │
+         ▼
+BinanceAutoTradeService  ──→  Filtres durs ──→  Exécution trade
+         │                                            │
+         ▼                                            ▼
+  checkSlTp() (chaque cycle)                Binance Futures
+  (surveillance SL/TP interne)              + ordres SL/TP
 ```
-> La `mise` est la marge engagée (ex. 100 USDT). Le levier est appliqué séparément.
+
+---
+
+### 📊 Indicateurs & score directionnel
+
+Le signal est un **score brut** converti en **confiance 0–100%** via `(score + 100) / 2`.
+
+| Indicateur | Timeframe | Pts max | Logique |
+|------------|-----------|---------|---------|
+| **RSI(14)** | 1h | ±30 | RSI<35 en uptrend → +30 · RSI>75 en downtrend → −25 · *context-aware* |
+| **EMA(9/21)** | 1h | ±30 | Écart relatif EMA9/EMA21 : >0.5% = +30, <−0.5% = −30 |
+| **MACD(12,26,9)** | 1h | ±20 | Histogramme positif/négatif, pondéré par amplitude |
+| **Bollinger(20,±2σ)** | 1h | ±15 | Prix proche bande basse = achat · bande haute en downtrend = short · *context-aware* |
+| **Stochastique(14,3)** | 1h | ±15 | %K <20 en uptrend = achat · %K >80 en downtrend = short · *context-aware* |
+| **OBV slope** | 1h | ±10 | Volume confirme ou contredit la direction |
+| **Structure marché** | 1h | ±20 | Pivots HH/HL/LH/LL → UPTREND / DOWNTREND / CONSOLIDATION |
+| **EMA(9/21) 4h** | 4h | ±25 | Tendance structurelle dominante (biais BULL/BEAR) |
+| **EMA(9/21) + MACD** | 5m | ±15 | Timing d'entrée — momentum UP/DOWN |
+| **Volume delta** | 1h | ±8 | `2×takerBuy − totalVol` sur 5 bougies → pression achat/vente nette |
+| **Funding rate** | Live | ±7 | >+0.05% = trop de longs → −pts · <−0.05% = trop de shorts → +pts |
+| **OI Trend** | 1h hist | ±10 | OI↑ + prix↑ = nouveaux longs (+10) · OI↑ + prix↓ = nouveaux shorts (−10) |
+| **Filtre volatilité** | 1h | −20 à 0 | ATR>3% du prix → −20 · BB Squeeze → −8 · bougie extrême → −15 |
+| **ADX(14)** | 1h | atténuation | ADX<15 → confiance atténuée 30% vers 50 |
+
+---
+
+### 🎯 Décision de direction
+
+```
+confidence ≥ 57%  →  LONG
+confidence ≤ 43%  →  SHORT
+43% < confidence < 57%  →  WAIT (aucun trade)
+```
+
+> Quand ADX < 25 (marché en range) : seuil LONG relevé à 62%, SHORT abaissé à 38% (anti-whipsaw).
+
+---
+
+### 🚦 Filtres durs (bloquent le trade même si confiance OK)
+
+| # | Filtre | Condition de blocage |
+|---|--------|---------------------|
+| 1 | **Structure** | CONSOLIDATION détectée |
+| 2 | **Alignement 4h** | Direction opposée au bias 4h fort (`|score4h| ≥ 15`) |
+| 3 | **5m momentum** | LONG si 5m DOWN · SHORT si 5m UP |
+| 4 | **Funding extrême** | LONG si funding >+0.05% · SHORT si funding <−0.05% |
+| 5 | **Volatilité EXTREME** | ATR > 3% du prix (flash crash / news event) |
+| 6 | **Bougie extrême** | Range dernière bougie > 3×ATR |
+| 7 | **BB Squeeze** | BB width < 1% (breakout imminent, direction inconnue) |
+| 8 | **Cooldown** | 4h obligatoires entre 2 trades |
+| 9 | **Perte journalière** | P&L jour ≤ −100 USDT → bot suspendu jusqu'à minuit UTC |
+| 10 | **Anti-empilement** | Même direction déjà ouverte (LONG+SHORT peuvent coexister) |
+| 11 | **Balance insuffisante** | USDT disponible < montant configuré |
+
+---
+
+### ⚡ Exécution d'un trade
+
+```
+Montant   : configurable (défaut 50 USDT)
+Levier    : configurable (défaut ×10)
+Quantité  : (montant × levier) / prix  (min 0.001 BTC)
+SL        : entrée ± SL% (défaut 1.5%)  → ordre STOP_MARKET reduceOnly=true
+TP        : entrée ± TP% (défaut 3.0%)  → ordre TAKE_PROFIT_MARKET reduceOnly=true
+Confirmation : 2 signaux consécutifs dans la même direction requis avant exécution
+```
+
+---
+
+### 🔒 Gestion des positions
+
+| Événement | Action |
+|-----------|--------|
+| SL atteint | `closeWithMarket()` (reduceOnly) → DB fermé → notification Telegram |
+| TP atteint | `closeWithMarket()` (reduceOnly) → DB fermé → notification Telegram |
+| Fermeture manuelle | `closeWithMarket()` → DB fermé → notification Telegram |
+| 🛑 Kill switch | Annule tous les ordres + ferme toutes positions au marché + désactive le bot |
+| Redémarrage | Restaure l'état depuis la DB → vérifie la position sur Binance → reprend la surveillance SL/TP |
+
+---
+
+### 📱 Notifications Telegram
+
+- **Trade ouvert** : direction, confiance %, prix, SL, TP, levier, montant
+- **Trade fermé** : raison (SL / TP / manuel), prix de sortie, P&L estimé
+
+---
+
+### 🖥️ Dashboard bitcoin.html
+
+- Carte signal temps réel : direction, confiance, RSI, MACD, ADX, Bollinger
+- Panel multi-TF : biais 4h + momentum 5m + structure marché
+- Panel volumétrique : funding rate, OI, volume delta
+- Positions ouvertes avec P&L non réalisé
+- Historique des trades réels avec P&L
+- Bouton **🛑 KILL SWITCH** (rouge) — fermeture d'urgence de toutes les positions
+
+---
+
+### 🔧 Configuration bot (`application.properties`)
+
+```properties
+# Clés API Binance Futures
+market.binance.futures.api-key=YOUR_API_KEY
+market.binance.futures.secret=YOUR_SECRET
+
+# Telegram (notifications)
+market.telegram.bot-token=YOUR_BOT_TOKEN
+market.telegram.chat-id=YOUR_CHAT_ID
+
+# Paramètres de trading
+market.binance.futures.auto-trade.min-confidence=60
+market.binance.futures.auto-trade.amount-usdt=50
+market.binance.futures.auto-trade.leverage=10
+market.binance.futures.auto-trade.sl-pct=1.5
+market.binance.futures.auto-trade.tp-pct=3.0
+market.binance.futures.auto-trade.daily-loss-limit=100
+```
+
+---
+
+### 📡 API REST Futures
+
+| Méthode | Endpoint | Description |
+|---------|----------|-------------|
+| GET | `/api/futures/status` | État du bot, config, dernier résultat |
+| POST | `/api/futures/enable` | Activer le bot |
+| POST | `/api/futures/disable` | Désactiver le bot |
+| POST | `/api/futures/trigger` | Déclencher manuellement un cycle |
+| POST | `/api/futures/config` | Modifier les paramètres en live |
+| GET | `/api/futures/diagnose` | Diagnostic complet (signal + tous les filtres) |
+| GET | `/api/futures/positions` | Positions ouvertes en temps réel |
+| POST | `/api/futures/close-position` | Fermer la position manuellement |
+| POST | `/api/futures/emergency-close` | 🛑 Kill switch — fermeture d'urgence |
+
+---
+
+### 🧪 Tests
+
+**176 tests** — couverture des services principaux :
+
+| Classe | Tests |
+|--------|-------|
+| `BinanceAutoTradeServiceTest` | 47 — cooldown, daily limit, kill switch, anti-empilement, filtres |
+| `TechnicalAnalysisServiceTest` | 41 — RSI, MACD, EMA, ATR, ADX, Bollinger, structure |
+| `TradeServiceTest` | 29 — CRUD trades, P&L |
+| `FuturesResourceTest` | 17 — tous les endpoints REST |
+| `CryptoAnalysisServiceTest` | 6 — cache, erreur, structure signal |
+| `BinanceFuturesServiceTest` | 9 — signature HMAC, config, méthodes |
 
 ---
 

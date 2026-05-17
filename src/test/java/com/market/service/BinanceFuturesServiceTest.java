@@ -86,5 +86,16 @@ class BinanceFuturesServiceTest {
         // The injected bean has a non-empty secret from application.properties → must not throw
         assertDoesNotThrow(() -> svc.sign("hello world"));
     }
+
+    // ── getOpenInterestHistory ────────────────────────────────────────────────
+
+    @Test
+    void getOpenInterestHistory_methodExists() {
+        // Verify the method is declared with the expected signature
+        assertDoesNotThrow(() -> {
+            BinanceFuturesService.class.getMethod("getOpenInterestHistory",
+                    String.class, String.class, int.class);
+        });
+    }
 }
 

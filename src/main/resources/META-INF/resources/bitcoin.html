@@ -724,6 +724,11 @@ Bougie extrême (range &gt; 3×ATR) : event violent → bloqué">Filtre volatili
                 style="padding:7px 12px;border-radius:7px;background:none;border:1px solid var(--border);color:var(--muted);font-size:13px;cursor:pointer">
           ⚙️ Config
         </button>
+        <button onclick="atEmergencyClose()"
+                style="padding:7px 16px;border-radius:7px;background:#5a0a0a;border:1px solid #8a1a1a;color:#ff4444;font-size:13px;font-weight:700;cursor:pointer"
+                title="Désactive le bot et ferme TOUTES les positions au marché immédiatement">
+          🛑 KILL SWITCH
+        </button>
       </div>
     </div>
 
@@ -1198,6 +1203,35 @@ async function atTrigger() {
     atShowResult({ status: 'error', message: 'Erreur réseau: ' + e.message });
   } finally {
     btn.textContent = '▶ Déclencher manuellement';
+    btn.disabled = false;
+  }
+}
+
+async function atEmergencyClose() {
+  const confirmed = confirm(
+    '🛑 KILL SWITCH — URGENCE\n\n' +
+    'Cette action va :\n' +
+    '• Désactiver le bot immédiatement\n' +
+    '• Annuler tous les ordres SL/TP\n' +
+    '• Fermer TOUTES les positions au prix du marché\n\n' +
+    '⚠️ Action irréversible. Confirmer ?'
+  );
+  if (!confirmed) return;
+
+  const btn = event.target;
+  btn.textContent = '⏳ Fermeture…';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/futures/emergency-close', { method: 'POST' }).then(r => r.json());
+    const msg = r.message || 'Kill switch exécuté';
+    const color = r.status === 'ok' ? '#ff4444' : '#f7c948';
+    atShowResult({ status: 'error', message: '🛑 ' + msg });
+    await atLoadStatus();
+    await loadRealTrades();
+  } catch (e) {
+    atShowResult({ status: 'error', message: '🛑 Erreur kill switch: ' + e.message });
+  } finally {
+    btn.textContent = '🛑 KILL SWITCH';
     btn.disabled = false;
   }
 }

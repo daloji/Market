@@ -230,6 +230,64 @@ class FuturesResourceTest {
             .body("[0].direction", equalTo("LONG"));
     }
 
+    // ── /emergency-close ──────────────────────────────────────────────────────
+
+    @Test
+    void emergencyClose_notConfigured_returns400() {
+        when(futures.isConfigured()).thenReturn(false);
+
+        given()
+            .contentType("application/json")
+            .when().post("/api/futures/emergency-close")
+            .then()
+            .statusCode(400);
+    }
+
+    @Test
+    void emergencyClose_configured_returns200() throws Exception {
+        when(futures.isConfigured()).thenReturn(true);
+        java.util.Map<String, Object> result = new java.util.HashMap<>();
+        result.put("status", "ok");
+        result.put("message", "Aucune position ouverte — bot désactivé");
+        when(autoTrade.emergencyCloseAll()).thenReturn(result);
+
+        given()
+            .contentType("application/json")
+            .when().post("/api/futures/emergency-close")
+            .then()
+            .statusCode(200)
+            .body("status", equalTo("ok"));
+    }
+
+    // ── /close-position ───────────────────────────────────────────────────────
+
+    @Test
+    void closePosition_notConfigured_returns400() {
+        when(futures.isConfigured()).thenReturn(false);
+
+        given()
+            .contentType("application/json")
+            .when().post("/api/futures/close-position")
+            .then()
+            .statusCode(400);
+    }
+
+    @Test
+    void closePosition_configured_returns200() throws Exception {
+        when(futures.isConfigured()).thenReturn(true);
+        java.util.Map<String, Object> result = new java.util.HashMap<>();
+        result.put("status", "ok");
+        result.put("message", "Position fermée");
+        when(autoTrade.closePosition(any())).thenReturn(result);
+
+        given()
+            .contentType("application/json")
+            .when().post("/api/futures/close-position")
+            .then()
+            .statusCode(200)
+            .body("status", equalTo("ok"));
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private BinanceAutoTradeService.AutoTradeResult skippedResult(String msg) {
