@@ -24,6 +24,9 @@ import static org.mockito.Mockito.when;
 @QuarkusTest
 class BinanceAutoTradeServiceTest {
 
+    /** Mirror of BinanceAutoTradeService.COOLDOWN_MS for test helpers. */
+    private static final long COOLDOWN_MS_FOR_TEST = 30L * 60 * 1000;
+
     @Inject
     BinanceAutoTradeService svc;
 
@@ -224,18 +227,48 @@ class BinanceAutoTradeServiceTest {
     }
 
     @Test
-    void checkAndTrade_openPosition_allowsNewTrade() throws Exception {
-        // Multi-position mode: open position no longer blocks new trades
+    void checkAndTrade_openPosition_sameDirection_isBlocked() throws Exception {
+        // Same-direction stacking is blocked: no LONG if LONG already tracked
         svc.enable();
         when(analysisService.getSignal()).thenReturn(longSignal(75, 100000));
-        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.05\"}]");
-        // First call: confirmation 1/2 (not blocked by open position)
+        // First trade: no position open yet
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
+        svc.checkAndTrade();
         BinanceAutoTradeService.AutoTradeResult r1 = svc.checkAndTrade();
-        assertEquals("skipped", r1.status);
-        assertTrue(r1.message.contains("confirmation"), "Should be waiting for confirmation, not blocked by position: " + r1.message);
-        // Second call: confirmation 2/2 → trade placed despite open position
+        assertEquals("placed", r1.status, "First LONG should be placed");
+
+        // After trade placed: simulate position still open (LONG 0.05 BTC)
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.05\"}]");
+        // Reset cooldown so only the same-direction filter blocks
+        setLastTradeAt(Instant.now().minusMillis(COOLDOWN_MS_FOR_TEST + 1000));
+
+        // Signal stays LONG — should be blocked (same direction already open)
         BinanceAutoTradeService.AutoTradeResult r2 = svc.checkAndTrade();
-        assertEquals("placed", r2.status, "Second call should place trade even with open position: " + r2.message);
+        assertEquals("skipped", r2.status, "Should be blocked: LONG position already open");
+        assertTrue(r2.message.contains("LONG") && r2.message.contains("déjà ouverte"),
+            "Should mention same-direction block: " + r2.message);
+    }
+
+    @Test
+    void checkAndTrade_openPosition_oppositeDirection_isAllowed() throws Exception {
+        // Opposite direction is allowed (hedge): LONG open → SHORT signal → trade placed
+        svc.enable();
+        when(analysisService.getSignal()).thenReturn(longSignal(75, 100000));
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
+        svc.checkAndTrade();
+        BinanceAutoTradeService.AutoTradeResult rLong = svc.checkAndTrade();
+        assertEquals("placed", rLong.status, "LONG should be placed");
+
+        // After LONG placed: position is open
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.05\"}]");
+        // Reset cooldown
+        setLastTradeAt(Instant.now().minusMillis(COOLDOWN_MS_FOR_TEST + 1000));
+
+        // Switch to SHORT signal — opposite direction allowed (hedge)
+        when(analysisService.getSignal()).thenReturn(shortSignal(25, 100000));
+        svc.checkAndTrade(); // confirmation 1/2
+        BinanceAutoTradeService.AutoTradeResult rShort = svc.checkAndTrade(); // confirmation 2/2
+        assertEquals("placed", rShort.status, "SHORT should be placed when LONG already open (hedge): " + rShort.message);
     }
 
     @Test

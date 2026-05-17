@@ -100,6 +100,43 @@ public class TelegramAlertService {
         send("🧪 *TEST* " + buildMessage(signal));
     }
 
+    /**
+     * Sends a trade placement notification (called immediately when a trade is placed).
+     * Always fires — no cooldown/direction filter.
+     */
+    public void sendTradeAlert(String dir, int conf, double price, double sl, double tp,
+                               double slPct, double tpPct, int leverage, double amountUsdt) {
+        if (!isEnabled()) return;
+        String emoji = "LONG".equals(dir) ? "🟢📈 LONG" : "🔴📉 SHORT";
+        String text = String.format(
+            "%s *BTC/USDT — Trade ouvert*\n" +
+            "Entrée : $%,.2f | Levier : x%d | Mise : $%.0f\n" +
+            "SL : $%,.2f (%.1f%%) | TP : $%,.2f (%.1f%%)\n" +
+            "Conviction : %d%%",
+            emoji, price, leverage, amountUsdt,
+            sl, slPct, tp, tpPct,
+            conf
+        );
+        send(text);
+    }
+
+    /**
+     * Sends a trade close notification (SL/TP hit or manual close).
+     */
+    public void sendCloseAlert(String dir, String reason, double price, double pnl) {
+        if (!isEnabled()) return;
+        String emoji = pnl >= 0 ? "✅" : "❌";
+        String text = String.format(
+            "%s *BTC/USDT — Position fermée*\n" +
+            "Direction : %s | Raison : %s\n" +
+            "Prix de clôture : $%,.2f\n" +
+            "P&L estimé : %s$%.2f",
+            emoji, dir, reason, price,
+            pnl >= 0 ? "+" : "", pnl
+        );
+        send(text);
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     private String buildMessage(BitcoinSignal s) {
@@ -123,26 +160,23 @@ public class TelegramAlertService {
     private void send(String text) {
         if (!isEnabled()) return;
         try {
-            // Escape characters that break Telegram Markdown (legacy mode)
-            String escaped = text
-                    .replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n");
-
-            String json = "{\"chat_id\":\"" + chatId.get() + "\","
-                        + "\"text\":\""    + escaped        + "\","
-                        + "\"parse_mode\":\"Markdown\"}";
+            // Build JSON safely using Jackson to avoid manual escaping issues
+            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            com.fasterxml.jackson.databind.node.ObjectNode body = om.createObjectNode();
+            body.put("chat_id", chatId.get());
+            body.put("text", text);
+            body.put("parse_mode", "Markdown");
 
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(API_BASE + botToken.get() + "/sendMessage"))
                     .header("Content-Type", "application/json")
                     .timeout(Duration.ofSeconds(15))
-                    .POST(HttpRequest.BodyPublishers.ofString(json))
+                    .POST(HttpRequest.BodyPublishers.ofString(om.writeValueAsString(body)))
                     .build();
 
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 200) {
-                LOG.infof("[Telegram] Alert sent: %s conf=%d%%", text.substring(0, Math.min(50, text.length())), 0);
+                LOG.infof("[Telegram] Alert sent: %s", text.substring(0, Math.min(50, text.length())));
             } else {
                 LOG.warnf("[Telegram] API HTTP %d: %s", resp.statusCode(), resp.body());
             }

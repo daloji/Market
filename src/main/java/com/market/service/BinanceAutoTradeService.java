@@ -45,6 +45,7 @@ public class BinanceAutoTradeService {
     @Inject BinanceFuturesService  futuresService;
     @Inject TradeService           tradeService;
     @Inject SignalHistoryService   signalHistoryService;
+    @Inject TelegramAlertService   telegramAlertService;
 
     // Default config from application.properties
     @ConfigProperty(name = "market.binance.futures.auto-trade.min-confidence", defaultValue = "70")
@@ -279,9 +280,19 @@ public class BinanceAutoTradeService {
             }
         }
 
-        // Positions Binance — informatif uniquement (plusieurs positions simultanées autorisées).
-        // Synchronise le suivi local si une position orpheline est détectée (pas de activeDir mais
-        // une position existe) pour que le monitoring SL/TP interne couvre la dernière position.
+        // ── Filtre anti-empilement même direction ─────────────────────────────
+        // Multi-positions = LONG + SHORT peuvent coexister, mais jamais 2 positions
+        // dans la même direction (empêche l'overtrading directionnel).
+        if (activeDir != null && activeDir.equals(dir)) {
+            AutoTradeResult r = AutoTradeResult.skipped(
+                "Position " + activeDir + " déjà ouverte — attendre fermeture avant d'ouvrir une nouvelle position dans la même direction");
+            signalHistoryService.record(signal, false, r.message);
+            return store(r);
+        }
+
+        // Positions Binance — synchronise le suivi local si une position orpheline est détectée
+        // (pas de activeDir mais une position existe) pour que le monitoring SL/TP interne
+        // couvre la dernière position.
         try {
             if (hasOpenPosition() && activeDir == null) {
                 // Orphan position: init local SL/TP tracking from configured percentages
@@ -435,10 +446,13 @@ public class BinanceAutoTradeService {
             d.positionError = e.getMessage();
         }
 
+        d.sameDirectionBlocked = activeDir != null && d.signalError == null
+                && activeDir.equals(d.signalDirection);
+
         d.wouldTrade = d.enabled && d.configured && d.directionOk
                 && d.confidenceOk && d.msOk && d.tf4hOk && d.tf5mOk
-                && d.volFilterOk && d.cooldownOk && d.confirmOk;
-                // positionOk intentionally excluded: multiple concurrent positions are allowed
+                && d.volFilterOk && d.cooldownOk && d.confirmOk
+                && !d.sameDirectionBlocked;
 
         // Compute the first blocking reason
         if (!d.enabled)            d.blockingReason = "Auto-trade désactivé";
@@ -465,6 +479,7 @@ public class BinanceAutoTradeService {
                 d.blockingReason = "Bollinger Squeeze — breakout imminent, direction inconnue";
         }
         else if (!d.cooldownOk)    d.blockingReason = "Cooldown actif — " + d.cooldownRemainMin + " min restantes (anti-overtrading, 30 min après fermeture)";
+        else if (d.sameDirectionBlocked) d.blockingReason = "Position " + activeDir + " déjà ouverte — attendre fermeture avant nouvelle position " + activeDir;
         else if (!d.confirmOk)     d.blockingReason = d.signalDirection + " confirmation " + d.confirmCount + "/" + d.confirmRequired
                     + " — attente " + d.confirmRequired + " signaux consécutifs (anti-faux-retournement)";
         else                       d.blockingReason = null; // all clear
@@ -516,6 +531,8 @@ public class BinanceAutoTradeService {
         public int     confirmCount;
         public int     confirmRequired;
         public boolean confirmOk;
+        // Anti-stacking (même direction)
+        public boolean sameDirectionBlocked;
         // Summary
         public boolean wouldTrade;
         public String  blockingReason;
@@ -558,6 +575,16 @@ public class BinanceAutoTradeService {
                     + " | SL=" + String.format(Locale.US, "%.1f", activeSlPrice)
                     + " TP=" + String.format(Locale.US, "%.1f", activeTpPrice);
             LOG.infof("[AutoTrade] 🔒 %s fermé: %s", activeDir, msg);
+
+            // Telegram close notification
+            double pnl = isLong
+                ? (price - activeSlPrice) * activeQty  // rough estimate using entry~SL as ref
+                : (activeSlPrice - price) * activeQty;
+            // Use TP/SL price difference as P&L proxy
+            double entryRef = isLong ? activeTpPrice / (1 + getTpPct() / 100) : activeTpPrice / (1 - getTpPct() / 100);
+            pnl = isLong ? (price - entryRef) * activeQty : (entryRef - price) * activeQty;
+            telegramAlertService.sendCloseAlert(activeDir, reason, price, pnl);
+
             clearActiveState();
             // Reset confirmation counter — require fresh signal confirmation after any close
             consecutiveSameDir = 0;
@@ -674,6 +701,11 @@ public class BinanceAutoTradeService {
 
             LOG.infof("[AutoTrade] ✅ %s ×%d conf=%d%% qty=%s @ %.2f SL=%.1f TP=%.1f",
                     dir, lev_, conf, qty, filledPrice, sl, tp1);
+
+            // Telegram notification
+            telegramAlertService.sendTradeAlert(dir, conf, filledPrice, sl, tp1,
+                    getSlPct(), getTpPct(), lev_, amt_);
+
             return AutoTradeResult.placed(dir, conf, filledPrice, sl, tp1,
                     getSlPct(), getTpPct(), lev_, amt_, log.toString());
 
