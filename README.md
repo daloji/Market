@@ -16,9 +16,10 @@ Application **Quarkus 3.8** de surveillance boursière qui récupère les donné
 7. [Dashboard web](#-dashboard-web)
 8. [API REST](#-api-rest)
 9. [Bot Trading BTC/USDT Futures](#-bot-de-trading-btcusdt-futures-binance)
-10. [Configuration](#-configuration)
-11. [Déploiement](#-déploiement)
-12. [Structure du projet](#-structure-du-projet)
+10. [Bot Scalping BTC/USDT](#-bot-scalping-btcusdt-1-minute)
+11. [Configuration](#-configuration)
+12. [Déploiement](#-déploiement)
+13. [Structure du projet](#-structure-du-projet)
 
 ---
 
@@ -457,20 +458,245 @@ market.binance.futures.auto-trade.daily-loss-limit=100
 
 ### 🧪 Tests
 
-**176 tests** — couverture des services principaux :
+**212 tests** — couverture des services principaux :
 
 | Classe | Tests |
 |--------|-------|
+| `BinanceScalpingTradeServiceTest` | 28 — gates, SL/TP monitor, -4003/-2022, PnL, statusMap |
 | `BinanceAutoTradeServiceTest` | 47 — cooldown, daily limit, kill switch, anti-empilement, filtres |
 | `TechnicalAnalysisServiceTest` | 41 — RSI, MACD, EMA, ATR, ADX, Bollinger, structure |
 | `TradeServiceTest` | 29 — CRUD trades, P&L |
 | `FuturesResourceTest` | 17 — tous les endpoints REST |
 | `CryptoAnalysisServiceTest` | 6 — cache, erreur, structure signal |
 | `BinanceFuturesServiceTest` | 9 — signature HMAC, config, méthodes |
+| `RecommendationResourceTest` | + — endpoints recommandations |
+| `StockResourceTest` | + — CRUD stocks |
+| `TradeResourceTest` | + — endpoints trades |
 
 ---
 
-## ⚙️ Configuration
+## ⚡ Bot Scalping BTC/USDT (1 minute)
+
+Onglet **Scalping** dans `bitcoin.html` — bot de scalping ultra-court terme sur BTC/USDT Futures, entièrement indépendant du bot swing.
+
+---
+
+### 🏗️ Architecture du scalping
+
+```
+MarketScheduler (@Scheduled toutes les minutes)
+         │
+         ▼
+ScalpingAnalysisService  ──→  ScalpingSignal (LONG / SHORT / WAIT + confidence 0–100)
+         │
+         ▼
+BinanceScalpingTradeService
+   ├─ Gates (non configuré, désactivé, WAIT, conf < seuil, cooldown, position Binance ouverte)
+   ├─ SL/TP monitor (surveille la position active à chaque tick)
+   └─ execute()
+        ├─ cancelAllOrders
+        ├─ setLeverage
+        ├─ placeMarketOrder  (entrée BUY/SELL)
+        ├─ placeCloseOrder STOP_MARKET          (SL algo Binance)
+        └─ placeCloseOrder TAKE_PROFIT_MARKET   (TP algo Binance)
+         │
+         ▼
+ScalpingTrade (JPA → table scalping_trade)  ←─ persisté à l'ouverture, mis à jour à la clôture
+```
+
+---
+
+### 📊 Indicateurs (bougies 1 minute)
+
+L'analyse utilise **200 bougies 1 minute** (~3h20 de données) récupérées depuis Binance `/api/v3/klines`.
+
+#### RSI(7)
+
+Période courte pour réactivité maximale sur le scalping.
+
+| Valeur | Points LONG | Points SHORT |
+|--------|-------------|--------------|
+| < 30 (survente forte) | +25 | 0 |
+| 30–45 (bas) | +12 | 0 |
+| 45–55 (neutre) | 0 | 0 |
+| 55–70 (haut) | 0 | +12 |
+| > 70 (surachat fort) | 0 | +25 |
+
+#### EMA 5 / 13
+
+Cross sur les moyennes mobiles exponentielles 1 minute.
+
+| Configuration | Points LONG | Points SHORT |
+|---------------|-------------|--------------|
+| `prix > EMA5 > EMA13` (alignement haussier parfait) | +25 | 0 |
+| `prix < EMA5 < EMA13` (alignement baissier parfait) | 0 | +25 |
+| `prix > EMA13` seulement | +10 | 0 |
+| `prix < EMA13` seulement | 0 | +10 |
+
+#### MACD(6, 13, 4)
+
+MACD rapide adapté au 1 minute — calcul exact par séries EMA glissantes.
+
+| Histogramme | Points LONG | Points SHORT |
+|-------------|-------------|--------------|
+| > 0 (momentum haussier) | +25 | 0 |
+| < 0 (momentum baissier) | 0 | +25 |
+
+#### Volume Delta
+
+Ratio `takerBuyVolume / totalVolume` sur les 20 dernières bougies (fourni par Binance, index 9 de la réponse klines).
+
+| Valeur | Interprétation | Points LONG | Points SHORT |
+|--------|----------------|-------------|--------------|
+| > 60% | Forte pression acheteuse | +25 | 0 |
+| 52–60% | Pression acheteuse | +12 | 0 |
+| 48–52% | Équilibre (neutre) | 0 | 0 |
+| 40–48% | Pression vendeuse | 0 | +12 |
+| < 40% | Forte pression vendeuse | 0 | +25 |
+
+#### Stochastique(5, 3)
+
+Confirmation — bonus ajouté au score mais non bloquant.
+
+| Condition | Bonus LONG | Bonus SHORT |
+|-----------|-----------|------------|
+| `%K < 20 ET %D < 20` | +10 | 0 |
+| `%K > 80 ET %D > 80` | 0 | +10 |
+
+#### Bollinger Bands(20, ±2σ)
+
+Utilisé comme **filtre de gate** uniquement : si `BB width < 0.3%` → SQUEEZE → trade bloqué quelle que soit la direction.
+
+---
+
+### 🎯 Décision de direction
+
+```
+Score LONG ≥ 65  →  LONG  (confiance = min(100, scoreLong))
+Score SHORT ≥ 65 →  SHORT (confiance = min(100, scoreShort))
+Sinon            →  WAIT  (aucun trade — signal insuffisant)
+```
+
+Score max théorique : 100 pts (25 RSI + 25 EMA + 25 MACD + 25 Vol Delta).
+Le Stochastique ajoute jusqu'à 10 pts bonus (score peut dépasser 100, plafonné à 100).
+
+---
+
+### ⚡ Placement du trade — séquence d'ordres
+
+Le placement se fait en **5 étapes séquentielles** avec gestion des erreurs à chaque étape :
+
+```
+① cancelAllOrders("BTCUSDT")
+   └─ Annule tous les ordres ouverts (évite les conflits avec d'anciens SL/TP)
+   └─ Échec non bloquant (warning loggué, on continue)
+
+② setLeverage("BTCUSDT", leverage)
+   └─ Applique le levier configuré avant tout ordre
+   └─ Échec bloquant → trade annulé
+
+③ placeMarketOrder("BTCUSDT", side, qty, positionSide?)
+   └─ LONG → side = "BUY"  · SHORT → side = "SELL"
+   └─ qty = floor((amountUsdt × leverage / prix) × 1000) / 1000  (min 0.001)
+   └─ En mode Hedge → positionSide = "LONG" ou "SHORT"
+   └─ Prix réel d'exécution (avgPrice) récupéré pour recalculer SL/TP
+   └─ Échec bloquant → trade annulé
+
+                    ⏱ pause 1500ms (Binance enregistre la position)
+
+④ placeCloseOrder("BTCUSDT", closeSide, "STOP_MARKET", slPrice, qty, positionSide?)
+   └─ LONG → closeSide = "SELL" · SHORT → closeSide = "BUY"
+   └─ slPrice = filledPrice × (1 − SL%) pour LONG
+   └─ slPrice = filledPrice × (1 + SL%) pour SHORT
+   └─ Échec non bloquant → SL absent, trade quand même actif (⚠ dans le résumé)
+
+⑤ placeCloseOrder("BTCUSDT", closeSide, "TAKE_PROFIT_MARKET", tpPrice, qty, positionSide?)
+   └─ tpPrice = filledPrice × (1 + TP%) pour LONG
+   └─ tpPrice = filledPrice × (1 − TP%) pour SHORT
+   └─ Échec non bloquant → TP absent, trade quand même actif (⚠ dans le résumé)
+```
+
+**Calcul de la quantité :**
+```
+rawQty = (amountUsdt × leverage) / prix
+qty    = floor(rawQty × 1000) / 1000   ← arrondi au 0.001 BTC inférieur
+qty    = max(0.001, qty)               ← minimum Binance
+```
+
+**Exemple avec 20 USDT, ×10, BTC à 95 000 $ :**
+```
+rawQty = (20 × 10) / 95 000 = 0.002105
+qty    = floor(0.002105 × 1000) / 1000 = 0.002 BTC
+SL (0.15%) = 95 000 × (1 − 0.0015) = 94 857.5
+TP (0.30%) = 95 000 × (1 + 0.003)  = 95 285.0
+```
+
+---
+
+### 🔒 Gestion des positions scalping
+
+| Événement | Action |
+|-----------|--------|
+| SL/TP algo Binance déclenché | Binance ferme la position automatiquement · l'app détecte -2022 ou -4003 au prochain cycle → nettoyage silencieux |
+| SL/TP interne déclenché | `closeWithMarket(reduceOnly)` → DB fermé · si -2022/-4003 : déjà fermé → nettoyage |
+| Fermeture manuelle | `POST /api/scalping/close` → `closeWithMarket()` → DB fermé |
+| Redémarrage | Restaure depuis DB → vérifie `positionAmt` sur `/fapi/v2/positionRisk` → si absent : marque `MANUAL` · si présent : restaure avec `qty` réel Binance |
+
+**Codes d'erreur traités silencieusement :**
+
+| Code | Signification | Comportement |
+|------|---------------|--------------|
+| `-2022` | ReduceOnly rejected (position inexistante) | Position considérée déjà fermée → P&L calculé, état nettoyé |
+| `-4003` | Quantity ≤ 0 (qty=0 après redémarrage) | Identique à -2022 |
+
+---
+
+### 🖥️ Dashboard scalping
+
+L'onglet Scalping de `bitcoin.html` comprend :
+
+- **Barre de contrôles** : activation/désactivation, configuration TP/SL/levier/montant, balance wallet USDT en temps réel
+- **Position active** : direction, prix d'entrée, TP/SL, P&L non réalisé en live, durée
+- **Graphique 1 minute** (lightweight-charts) avec 100 bougies · autoSize
+- **6 cartes indicateurs** avec tooltips : RSI(7), EMA 5/13, MACD(6,13,4), Vol Delta, Stoch(5,3), Score
+- **Conditions avant trade** : gates bloquantes + indicateurs individuels (✅/❌) avec détails et tooltips
+- **Reasoning** : texte explicatif du signal courant (généré par `ScalpingAnalysisService`)
+- **Historique des trades** : date, direction, confiance, entrée, TP, SL, sortie, durée, statut (🟢 TP / 🔴 SL / ✋ Manuel), P&L · stats win rate et P&L total
+
+
+---
+
+### 🔧 Configuration scalping (`application.properties`)
+
+```properties
+# Scalping (1 minute, indépendant du bot swing)
+market.binance.scalping.min-confidence=65
+market.binance.scalping.amount-usdt=20
+market.binance.scalping.leverage=10
+market.binance.scalping.tp-pct=0.30
+market.binance.scalping.sl-pct=0.15
+```
+
+Tous les paramètres sont modifiables en live via l'UI sans redémarrage.
+
+---
+
+### 📡 API REST Scalping
+
+| Méthode | Endpoint | Description |
+|---------|----------|-------------|
+| GET | `/api/scalping/status` | État du bot, config, position active, balance wallet |
+| POST | `/api/scalping/enable` | Activer le bot scalping |
+| POST | `/api/scalping/disable` | Désactiver le bot scalping |
+| POST | `/api/scalping/trigger` | Déclencher manuellement un cycle |
+| POST | `/api/scalping/config` | Modifier TP/SL/levier/montant/confiance en live |
+| POST | `/api/scalping/force-long` | Forcer l'entrée LONG (bypass gates) |
+| POST | `/api/scalping/force-short` | Forcer l'entrée SHORT (bypass gates) |
+| POST | `/api/scalping/close` | Fermer la position active manuellement |
+| GET | `/api/scalping/history` | Historique des trades scalping |
+| GET | `/api/scalping/signal` | Signal courant (RSI, EMA, MACD, score, conditions) |
+
+---
 
 Fichier : `src/main/resources/application.properties`
 
@@ -574,7 +800,9 @@ market/
     │   │   │   ├── ValuationVerdict.java    # UNDERVALUED / FAIRLY_VALUED / OVERVALUED
     │   │   │   ├── RecommendationSignal.java# BUY / HOLD / SELL
     │   │   │   ├── Trade.java               # Trade simulé ou réel BTC
-    │   │   │   ├── BitcoinSignal.java       # Signal intraday BTC
+    │   │   │   ├── BitcoinSignal.java       # Signal intraday BTC (1h)
+    │   │   │   ├── ScalpingSignal.java      # Signal scalping 1 min
+    │   │   │   ├── ScalpingTrade.java       # Entité JPA trades scalping (table scalping_trade)
     │   │   │   └── CandleDTO.java           # Bougie OHLCV
     │   │   ├── provider/                    # Abstraction multi-sources
     │   │   │   ├── StockDataProvider.java   # Interface commune
@@ -584,23 +812,30 @@ market/
     │   │   │   ├── TwelveDataProvider.java
     │   │   │   └── AlphaVantageProvider.java
     │   │   ├── service/
-    │   │   │   ├── TechnicalAnalysisService.java  # RSI/SMA/EMA/MACD/Bollinger
-    │   │   │   ├── RecommendationService.java     # Orchestration → persist → alerte
-    │   │   │   ├── StockDataService.java           # Fetch + upsert quotes
-    │   │   │   ├── FundamentalAnalysisService.java # Scoring fondamental + cache 3 niveaux
-    │   │   │   ├── YahooCrumbService.java          # Cookie + crumb Yahoo Finance
-    │   │   │   ├── CryptoAnalysisService.java      # Signal BTC intraday
-    │   │   │   ├── TradeService.java                # Simulation et trades réels levierés
-    │   │   │   ├── AlertService.java                # Email sur transition → BUY
-    │   │   │   ├── WhatsAppAlertService.java        # WhatsApp via CallMeBot sur signal BTC
-    │   │   │   └── DataInitializer.java             # Seed + analyse au démarrage
+    │   │   │   ├── TechnicalAnalysisService.java       # RSI/SMA/EMA/MACD/Bollinger
+    │   │   │   ├── RecommendationService.java          # Orchestration → persist → alerte
+    │   │   │   ├── StockDataService.java               # Fetch + upsert quotes
+    │   │   │   ├── FundamentalAnalysisService.java     # Scoring fondamental + cache 3 niveaux
+    │   │   │   ├── YahooCrumbService.java              # Cookie + crumb Yahoo Finance
+    │   │   │   ├── CryptoAnalysisService.java          # Signal BTC intraday (1h)
+    │   │   │   ├── ScalpingAnalysisService.java        # Signal BTC scalping (1 min)
+    │   │   │   ├── BinanceFuturesService.java          # Client HTTP Binance Futures (bas niveau)
+    │   │   │   ├── BinanceAutoTradeService.java        # Bot swing BTC (1h)
+    │   │   │   ├── BinanceScalpingTradeService.java    # Bot scalping BTC (1 min)
+    │   │   │   ├── TradeService.java                   # Simulation et trades réels levierés
+    │   │   │   ├── AlertService.java                   # Email sur transition → BUY
+    │   │   │   ├── TelegramAlertService.java           # Notifications Telegram (open/close)
+    │   │   │   ├── WhatsAppAlertService.java           # WhatsApp via CallMeBot sur signal BTC
+    │   │   │   └── DataInitializer.java                # Seed + analyse au démarrage
     │   │   ├── scheduler/
-    │   │   │   └── MarketScheduler.java    # @Scheduled : marché 5min, BTC 15s, fond. 8h05
+    │   │   │   └── MarketScheduler.java    # @Scheduled : marché 5min, BTC 15s, scalping 1min, fond. 8h05
     │   │   └── resource/
     │   │       ├── StockResource.java
     │   │       ├── RecommendationResource.java
     │   │       ├── FundamentalResource.java
     │   │       ├── CryptoResource.java
+    │   │       ├── FuturesResource.java     # Bot swing : /api/futures/*
+    │   │       ├── ScalpingResource.java    # Bot scalping : /api/scalping/*
     │   │       ├── TradeResource.java
     │   │       └── MarketIndexResource.java
     │   └── resources/
@@ -609,8 +844,8 @@ market/
     │           ├── index.html              # Dashboard principal
     │           ├── style.css               # Thème sombre, grid, modals
     │           ├── app.js                  # Fetch, rendu cards, Chart.js, filtres
-    │           ├── bitcoin.html            # Simulateur BTC
-    │           ├── bitcoin.js
+    │           ├── bitcoin.html            # Trading BTC (swing + scalping)
+    │           ├── bitcoin.js              # Logique dashboard bitcoin
     │           ├── bitcoin.css
     │           ├── trade-history.html      # Historique des trades BTC
     │           └── diag.html              # Page de diagnostic des API
@@ -619,8 +854,13 @@ market/
             ├── resource/
             │   ├── StockResourceTest.java
             │   ├── RecommendationResourceTest.java
+            │   ├── FuturesResourceTest.java
             │   └── TradeResourceTest.java
             └── service/
+                ├── BinanceAutoTradeServiceTest.java     # 47 tests bot swing
+                ├── BinanceScalpingTradeServiceTest.java # 28 tests bot scalping
+                ├── BinanceFuturesServiceTest.java
+                ├── CryptoAnalysisServiceTest.java
                 ├── TechnicalAnalysisServiceTest.java
                 └── TradeServiceTest.java
 ```

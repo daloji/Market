@@ -1213,9 +1213,14 @@ Bougie extrême (range &gt; 3×ATR) : event violent → bloqué">Filtre volatili
       <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="RSI (7 périodes) — Relative Strength Index
 < 30 → survente, signal LONG potentiel
 > 70 → surachat, signal SHORT potentiel
-Zone 30–70 → neutre">RSI(7)</div>
+Zone 30–70 → neutre
+↑/↓ Pente : RSI monte ou descend (+5 pts)
+⚡ Accélération : vitesse croissante (+5 pts)
+DIV↑ : divergence haussière (+10 pts)
+DIV↓ : divergence baissière (+10 pts)">RSI(7)</div>
       <div id="scalping-rsi" style="font-size:22px;font-weight:700">—</div>
-      <div style="height:3px;border-radius:2px;margin-top:8px;background:var(--border)">
+      <div id="scalping-rsi-dyn" style="font-size:11px;margin-top:4px;display:flex;gap:6px;align-items:center">—</div>
+      <div style="height:3px;border-radius:2px;margin-top:6px;background:var(--border)">
         <div id="scalping-rsi-fill" style="height:100%;border-radius:2px;transition:width .4s"></div>
       </div>
       <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:2px">
@@ -1265,12 +1270,14 @@ Croisement %K/%D = signal d'entrée">Stoch(5,3)</div>
       <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="Score composite (0–100)
 ≥ 65 → BUY · ≤ 35 → SELL · sinon HOLD
 RSI : +25 max (survente/surachat)
+RSI dyn : +20 max (pente+accél+divergence)
 EMA : +25 max (alignement tendance)
 MACD : ±25 (momentum histogramme)
 Vol : +25 max (pression directionnelle)
 BB : bonus si prix aux bandes">Score</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
-        <div style="text-align:center" data-tooltip="Contribution RSI au score (max ±25)"><div style="font-size:14px;font-weight:700" id="sc-rsi">—</div><div style="font-size:9px;color:var(--muted)">RSI</div></div>
+        <div style="text-align:center" data-tooltip="Contribution RSI niveau au score (max ±25)"><div style="font-size:14px;font-weight:700" id="sc-rsi">—</div><div style="font-size:9px;color:var(--muted)">RSI</div></div>
+        <div style="text-align:center" data-tooltip="Contribution RSI dynamique : pente+accélération+divergence (max ±20)"><div style="font-size:14px;font-weight:700" id="sc-rsi-dyn">—</div><div style="font-size:9px;color:var(--muted)">Dyn</div></div>
         <div style="text-align:center" data-tooltip="Contribution EMA au score (max ±25)"><div style="font-size:14px;font-weight:700" id="sc-ema">—</div><div style="font-size:9px;color:var(--muted)">EMA</div></div>
         <div style="text-align:center" data-tooltip="Contribution MACD au score (max ±25)"><div style="font-size:14px;font-weight:700" id="sc-macd">—</div><div style="font-size:9px;color:var(--muted)">MACD</div></div>
         <div style="text-align:center" data-tooltip="Contribution Volume au score (max ±25)"><div style="font-size:14px;font-weight:700" id="sc-vol">—</div><div style="font-size:9px;color:var(--muted)">Vol</div></div>

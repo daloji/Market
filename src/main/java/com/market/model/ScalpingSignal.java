@@ -70,6 +70,25 @@ public class ScalpingSignal {
     public int macdScore;
     public int volScore;
 
+    // ── RSI dynamics ─────────────────────────────────────────────────────────
+    /** RSI value 1 candle ago (for slope) */
+    public double rsiPrev;
+    /** RSI value 2 candles ago (for acceleration) */
+    public double rsiPrev2;
+    /** rsi7 - rsiPrev : positive = RSI rising, negative = RSI falling */
+    public double rsiSlope;
+    /** (rsi7-rsiPrev) - (rsiPrev-rsiPrev2) : positive = RSI accelerating up */
+    public double rsiAcceleration;
+    /**
+     * RSI divergence over last 5 candles:
+     * "BULLISH" = price falling but RSI rising (long signal)
+     * "BEARISH" = price rising but RSI falling (short signal)
+     * "NONE"    = no divergence
+     */
+    public String rsiDivergence;
+    /** Score contribution from slope + acceleration + divergence */
+    public int rsiDynScore;
+
     // ── Chart data ───────────────────────────────────────────────────────────
     /** Last 100 1m candles for candlestick chart */
     public List<CandleDTO> candles;

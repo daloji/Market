@@ -1756,6 +1756,24 @@ function renderScalpingSignal(s) {
   fill.style.width = (rsi != null ? Math.min(100, rsi) : 0) + '%';
   fill.style.background = rsi < 30 ? GREEN : rsi > 70 ? RED : ACC;
 
+  // RSI dynamics: slope / acceleration / divergence
+  const rsiDynEl = document.getElementById('scalping-rsi-dyn');
+  if (rsiDynEl) {
+    const slope = s.rsiSlope;
+    const accel = s.rsiAcceleration;
+    const div   = s.rsiDivergence;
+    const slopeArrow = slope > 0.5 ? `<span style="color:${GREEN}">↑${slope.toFixed(1)}</span>`
+                     : slope < -0.5 ? `<span style="color:${RED}">↓${slope.toFixed(1)}</span>`
+                     : `<span style="color:var(--muted)">→${slope != null ? slope.toFixed(1) : '—'}</span>`;
+    const accelIcon = accel > 0.3 ? `<span style="color:${GREEN}" title="Accélération">⚡</span>`
+                    : accel < -0.3 ? `<span style="color:${RED}" title="Décélération">⚡</span>`
+                    : '';
+    const divBadge = div === 'BULLISH' ? `<span style="color:${GREEN};font-size:10px;font-weight:700">DIV↑</span>`
+                   : div === 'BEARISH' ? `<span style="color:${RED};font-size:10px;font-weight:700">DIV↓</span>`
+                   : '';
+    rsiDynEl.innerHTML = `${slopeArrow} ${accelIcon} ${divBadge}`;
+  }
+
   // EMA 5/13
   document.getElementById('scalping-ema').textContent =
     (s.ema5 ? s.ema5.toFixed(0) : '—') + ' / ' + (s.ema13 ? s.ema13.toFixed(0) : '—');
@@ -1814,7 +1832,8 @@ function renderScalpingSignal(s) {
     el.textContent  = v != null ? (v > 0 ? '+' : '') + v : '—';
     el.style.color  = scoreColor(v);
   };
-  scoreEl('sc-rsi',  s.rsiScore);
+  scoreEl('sc-rsi',     s.rsiScore);
+  scoreEl('sc-rsi-dyn', s.rsiDynScore);
   scoreEl('sc-ema',  s.emaScore);
   scoreEl('sc-macd', s.macdScore);
   scoreEl('sc-vol',  s.volScore);

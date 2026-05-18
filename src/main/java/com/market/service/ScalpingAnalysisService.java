@@ -105,6 +105,24 @@ public class ScalpingAnalysisService {
             // RSI(7) — faster than RSI(14)
             s.rsi7 = ta.calculateRSI(closeList, 7);
 
+            // RSI dynamics: slope, acceleration, divergence
+            s.rsiPrev  = ta.calculateRSI(closeList.subList(0, n - 1), 7);
+            s.rsiPrev2 = ta.calculateRSI(closeList.subList(0, n - 2), 7);
+            s.rsiSlope        = r2(s.rsi7    - s.rsiPrev);
+            s.rsiAcceleration = r2(s.rsiSlope - r2(s.rsiPrev - s.rsiPrev2));
+
+            // RSI divergence over last 5 candles (price slope vs RSI slope)
+            double priceSlope5 = closes[n - 1] - closes[n - 5]; // price direction
+            double rsi5ago     = ta.calculateRSI(closeList.subList(0, n - 4), 7);
+            double rsiSlope5   = s.rsi7 - rsi5ago;               // RSI direction
+            if (priceSlope5 < 0 && rsiSlope5 > 1.5) {
+                s.rsiDivergence = "BULLISH"; // price down but RSI up → reversal LONG
+            } else if (priceSlope5 > 0 && rsiSlope5 < -1.5) {
+                s.rsiDivergence = "BEARISH"; // price up but RSI down → reversal SHORT
+            } else {
+                s.rsiDivergence = "NONE";
+            }
+
             // EMA(5) and EMA(13) on 1m
             s.ema5  = ta.calculateEMA(closeList, 5);
             s.ema13 = ta.calculateEMA(closeList, 13);
@@ -166,6 +184,40 @@ public class ScalpingAnalysisService {
             } else {
                 reasoning.append("RSI(7) neutre (").append((int)s.rsi7).append("). ");
             }
+
+            // RSI dynamics: slope (+5), acceleration (+5), divergence (+10)
+            int rsiDynLong = 0, rsiDynShort = 0;
+
+            // Slope: RSI rising → LONG bias, falling → SHORT bias
+            if (s.rsiSlope > 0.5) {
+                rsiDynLong  += 5;
+                reasoning.append(String.format("RSI↑pente+%.1f. ", s.rsiSlope));
+            } else if (s.rsiSlope < -0.5) {
+                rsiDynShort += 5;
+                reasoning.append(String.format("RSI↓pente%.1f. ", s.rsiSlope));
+            }
+
+            // Acceleration: RSI speeding up in same direction → extra confidence
+            if (s.rsiAcceleration > 0.3) {
+                rsiDynLong  += 5;
+                reasoning.append(String.format("RSI accél+%.1f. ", s.rsiAcceleration));
+            } else if (s.rsiAcceleration < -0.3) {
+                rsiDynShort += 5;
+                reasoning.append(String.format("RSI accél%.1f. ", s.rsiAcceleration));
+            }
+
+            // Divergence: strongest signal
+            if ("BULLISH".equals(s.rsiDivergence)) {
+                rsiDynLong  += 10;
+                reasoning.append("Divergence RSI haussière. ");
+            } else if ("BEARISH".equals(s.rsiDivergence)) {
+                rsiDynShort += 10;
+                reasoning.append("Divergence RSI baissière. ");
+            }
+
+            s.rsiDynScore = rsiDynLong > rsiDynShort ? rsiDynLong : -rsiDynShort;
+            longScore  += rsiDynLong;
+            shortScore += rsiDynShort;
 
             // EMA cross: price > EMA5 > EMA13 = LONG, price < EMA5 < EMA13 = SHORT
             if (price > s.ema5 && s.ema5 > s.ema13) {
