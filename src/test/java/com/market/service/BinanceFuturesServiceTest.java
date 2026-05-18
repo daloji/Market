@@ -91,11 +91,98 @@ class BinanceFuturesServiceTest {
 
     @Test
     void getOpenInterestHistory_methodExists() {
-        // Verify the method is declared with the expected signature
         assertDoesNotThrow(() -> {
             BinanceFuturesService.class.getMethod("getOpenInterestHistory",
                     String.class, String.class, int.class);
         });
+    }
+
+    // ── buildCloseOrderBody — algo endpoint params ────────────────────────────
+
+    @Test
+    void buildCloseOrderBody_oneWayMode_usesAlgoConditionalParams() {
+        BinanceFuturesService s = new BinanceFuturesService();
+        String body = s.buildCloseOrderBody("BTCUSDT", "SELL", "STOP_MARKET", 95000.0, "0.002", null);
+
+        assertTrue(body.contains("algoType=CONDITIONAL"),  "Must include algoType=CONDITIONAL");
+        assertTrue(body.contains("&type=STOP_MARKET"),     "Must use type= (not orderType=)");
+        assertTrue(body.contains("triggerPrice=95000.0"),  "Must use triggerPrice= not stopPrice=");
+        assertTrue(body.contains("closePosition=true"),     "One-Way mode must use closePosition=true");
+        assertTrue(body.contains("workingType=MARK_PRICE"), "Must request MARK_PRICE");
+        assertTrue(body.contains("symbol=BTCUSDT"),         "Must include symbol");
+        assertTrue(body.contains("side=SELL"),              "Must include side");
+    }
+
+    @Test
+    void buildCloseOrderBody_oneWayMode_doesNotContainLegacyParams() {
+        BinanceFuturesService s = new BinanceFuturesService();
+        String body = s.buildCloseOrderBody("BTCUSDT", "BUY", "TAKE_PROFIT_MARKET", 105000.0, "0.002", null);
+
+        assertFalse(body.contains("orderType="), "Must NOT use orderType= parameter");
+        assertFalse(body.contains("stopPrice="),  "Must NOT use legacy stopPrice= parameter");
+        assertFalse(body.contains("positionSide"), "One-Way mode must NOT include positionSide");
+        assertFalse(body.contains("quantity="),    "One-Way mode must NOT include explicit quantity");
+    }
+
+    @Test
+    void buildCloseOrderBody_hedgeMode_usesQuantityAndPositionSide() {
+        BinanceFuturesService s = new BinanceFuturesService();
+        String body = s.buildCloseOrderBody("BTCUSDT", "SELL", "STOP_MARKET", 94000.5, "0.003", "LONG");
+
+        assertTrue(body.contains("positionSide=LONG"), "Hedge mode must include positionSide");
+        assertTrue(body.contains("quantity=0.003"),    "Hedge mode must include explicit quantity");
+        assertFalse(body.contains("closePosition"),    "Hedge mode must NOT use closePosition");
+    }
+
+    @Test
+    void buildCloseOrderBody_hedgeMode_short() {
+        BinanceFuturesService s = new BinanceFuturesService();
+        String body = s.buildCloseOrderBody("BTCUSDT", "BUY", "TAKE_PROFIT_MARKET", 90000.0, "0.001", "SHORT");
+
+        assertTrue(body.contains("positionSide=SHORT"));
+        assertTrue(body.contains("&type=TAKE_PROFIT_MARKET"));
+        assertTrue(body.contains("side=BUY"));
+    }
+
+    @Test
+    void buildCloseOrderBody_triggerPriceFormattedToOneDecimal() {
+        BinanceFuturesService s = new BinanceFuturesService();
+
+        assertTrue(s.buildCloseOrderBody("BTCUSDT", "SELL", "STOP_MARKET", 95000.123, "0.001", null)
+                .contains("triggerPrice=95000.1"), "Must round to 1 decimal");
+
+        assertTrue(s.buildCloseOrderBody("BTCUSDT", "SELL", "STOP_MARKET", 95000.0, "0.001", null)
+                .contains("triggerPrice=95000.0"), "Must keep trailing .0");
+    }
+
+    @Test
+    void buildCloseOrderBody_blankPositionSide_treatedAsOneWay() {
+        BinanceFuturesService s = new BinanceFuturesService();
+        String body = s.buildCloseOrderBody("BTCUSDT", "SELL", "STOP_MARKET", 95000.0, "0.002", "  ");
+
+        assertTrue(body.contains("closePosition=true"), "Blank positionSide must behave as One-Way");
+        assertFalse(body.contains("positionSide"),      "Blank positionSide must NOT appear in body");
+    }
+
+    // ── cancelAllAlgoOrders — JSON parsing ────────────────────────────────────
+
+    @Test
+    void cancelAllAlgoOrders_methodExists() {
+        assertDoesNotThrow(() -> {
+            BinanceFuturesService.class.getMethod("cancelAllAlgoOrders", String.class);
+        });
+    }
+
+    @Test
+    void buildCloseOrderBody_stopMarketAndTakeProfitMarket_differOnlyOnOrderType() {
+        BinanceFuturesService s = new BinanceFuturesService();
+        String sl = s.buildCloseOrderBody("BTCUSDT", "BUY", "STOP_MARKET",        96000.0, "0.002", null);
+        String tp = s.buildCloseOrderBody("BTCUSDT", "BUY", "TAKE_PROFIT_MARKET", 96000.0, "0.002", null);
+
+        assertTrue(sl.contains("&type=STOP_MARKET"),        "SL must use STOP_MARKET");
+        assertTrue(tp.contains("&type=TAKE_PROFIT_MARKET"), "TP must use TAKE_PROFIT_MARKET");
+        // Everything else should be identical
+        assertEquals(sl.replace("STOP_MARKET", "TAKE_PROFIT_MARKET"), tp);
     }
 }
 

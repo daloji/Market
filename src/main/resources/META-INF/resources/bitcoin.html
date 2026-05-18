@@ -4,7 +4,7 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>BTC Futures Intraday · x10 Levier</title>
-  <link rel="stylesheet" href="bitcoin.css"/>
+  <link rel="stylesheet" href="bitcoin.css?v=4"/>
   <!-- TradingView Lightweight Charts (candlestick chart) -->
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -34,6 +34,7 @@
   <button class="tab-btn"        data-tab="simu">🧮 Simulation</button>
   <button class="tab-btn"        data-tab="real">💹 Trades Réels</button>
   <button class="tab-btn"        data-tab="signals">📋 Signaux</button>
+  <button class="tab-btn"        data-tab="scalping">⚡ Scalping</button>
 </nav>
 
 <!-- ════════════════════════  TAB : SIGNAL  ════════════════════════════════ -->
@@ -1063,6 +1064,264 @@ Bougie extrême (range &gt; 3×ATR) : event violent → bloqué">Filtre volatili
     </div>
   </div>
 </div>
+
+<!-- ════════════════════════  TAB : SCALPING  ════════════════════════════════ -->
+<div id="tab-scalping" class="tab-pane">
+<div style="display:flex;flex-direction:column;gap:12px;padding-bottom:24px">
+
+  <!-- ① CONTRÔLES -->
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <div id="scalping-bot-status" style="font-size:13px;font-weight:700;color:var(--muted)">● Désactivé</div>
+      <button id="scalping-toggle-btn" onclick="toggleScalping()"
+        style="padding:7px 18px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;background:#238636;color:#fff">
+        ▶ Activer
+      </button>
+      <button onclick="triggerScalping()"
+        style="padding:7px 12px;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;background:transparent;color:var(--text)">
+        ⚡ Test
+      </button>
+      <button onclick="checkBinanceOrders()"
+        style="padding:7px 12px;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;background:transparent;color:var(--accent)">
+        📋 Ordres
+      </button>
+      <button onclick="loadScalpingSignal()"
+        style="padding:7px 12px;border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:12px;background:transparent;color:var(--muted)">
+        ⟳ Actualiser
+      </button>
+      <span id="scalping-bot-msg" style="font-size:12px;color:var(--muted)"></span>
+      <div id="scalping-would-trade" style="margin-left:auto;font-size:12px;font-weight:700;padding:4px 12px;border-radius:20px;border:1px solid var(--border)">—</div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;margin-left:8px">
+        <div style="font-size:10px;color:var(--muted)">WALLET USDT</div>
+        <div id="scalping-wallet-total" style="font-size:15px;font-weight:700;color:var(--text)">—</div>
+        <div id="scalping-wallet-avail" style="font-size:11px;color:var(--muted)">dispo: —</div>
+      </div>
+    </div>
+    <div id="scalping-last-result" style="padding:7px 10px;background:var(--bg);border-radius:6px;font-size:12px;color:var(--muted);line-height:1.5;border:1px solid var(--border)">
+      En attente du premier cycle…
+    </div>
+  </div>
+
+  <!-- ② POSITION ACTIVE -->
+  <div id="scalping-active-pos" style="display:none">
+    <div style="border:2px solid var(--accent);border-radius:12px;padding:14px 18px;background:rgba(240,180,41,0.05)">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+        <span style="color:var(--accent);font-weight:700;font-size:14px">⚡ Position active</span>
+        <span id="scalping-pos-dir" style="font-size:14px;font-weight:700;padding:2px 12px;border-radius:20px;background:var(--surface)">—</span>
+        <span id="scalping-pos-conf" style="font-size:12px;color:var(--muted)"></span>
+        <span id="scalping-pos-duration" style="font-size:12px;color:var(--muted);margin-left:auto">—</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px">
+        <div style="background:var(--surface);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px">ENTRÉE</div>
+          <div id="scalping-pos-entry" style="font-size:15px;font-weight:700">—</div>
+        </div>
+        <div id="scalping-pos-pnl-card" style="background:var(--surface);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:4px">P&amp;L NON-RÉALISÉ</div>
+          <div id="scalping-pos-pnl" style="font-size:18px;font-weight:700">—</div>
+          <div id="scalping-pos-pnl-pct" style="font-size:11px;color:var(--muted)"></div>
+        </div>
+        <div style="background:var(--surface);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--green);margin-bottom:4px">TAKE PROFIT</div>
+          <div id="scalping-pos-tp" style="font-size:15px;font-weight:700;color:var(--green)">—</div>
+          <div id="scalping-pos-tp-dist" style="font-size:11px;color:var(--green)"></div>
+        </div>
+        <div style="background:var(--surface);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:10px;color:var(--red);margin-bottom:4px">STOP LOSS</div>
+          <div id="scalping-pos-sl" style="font-size:15px;font-weight:700;color:var(--red)">—</div>
+          <div id="scalping-pos-sl-dist" style="font-size:11px;color:var(--red)"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ③ SIGNAL (gauche) + GRAPHIQUE (droite) -->
+  <div style="display:grid;grid-template-columns:220px 1fr;gap:12px;align-items:start">
+
+    <!-- Colonne gauche -->
+    <div style="display:flex;flex-direction:column;gap:10px">
+
+      <div class="signal-card" id="scalping-card" style="text-align:center">
+        <div style="font-size:10px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">SIGNAL 1m</div>
+        <div class="signal-direction" id="scalping-direction">—</div>
+        <div id="scalping-confidence" style="font-size:13px;margin-top:6px;color:var(--muted)">—</div>
+        <div id="scalping-last-update" style="font-size:10px;color:var(--muted);margin-top:6px"></div>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+        <div style="font-size:10px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">NIVEAUX</div>
+        <table class="levels-table" style="width:100%">
+          <tbody>
+            <tr><td class="lbl">💰 Prix</td>  <td class="val" id="scalping-price">—</td><td></td></tr>
+            <tr><td class="lbl">🎯 TP1</td>    <td class="val" style="color:var(--green)" id="scalping-tp1">—</td><td class="dist" id="scalping-tp1-pnl" style="color:var(--green)"></td></tr>
+            <tr><td class="lbl">🎯 TP2</td>    <td class="val" style="color:var(--green)" id="scalping-tp2">—</td><td class="dist" id="scalping-tp2-pnl" style="color:var(--green)"></td></tr>
+            <tr><td class="lbl">🛑 SL</td>     <td class="val" style="color:var(--red)"   id="scalping-sl">—</td><td class="dist" id="scalping-sl-pnl"  style="color:var(--red)"></td></tr>
+            <tr><td class="lbl">📏 ATR</td>    <td class="val" id="scalping-atr">—</td><td class="dist" id="scalping-atr-pct" style="color:var(--muted)"></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+        <div style="font-size:10px;color:var(--muted);letter-spacing:.08em;margin-bottom:8px">CONFIGURATION</div>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <label style="font-size:11px;color:var(--muted)">Mise (USDT)
+            <input id="scalping-cfg-amount" type="number" min="5" step="1" value="20"
+              style="width:100%;margin-top:3px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px"/>
+          </label>
+          <label style="font-size:11px;color:var(--muted)">Levier
+            <input id="scalping-cfg-lev" type="number" min="1" max="20" step="1" value="10"
+              style="width:100%;margin-top:3px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px"/>
+          </label>
+          <div style="display:flex;gap:6px">
+            <label style="font-size:11px;color:var(--muted);flex:1">TP %
+              <input id="scalping-cfg-tp" type="number" min="0.1" max="2" step="0.05" value="0.3"
+                style="width:100%;margin-top:3px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px"/>
+            </label>
+            <label style="font-size:11px;color:var(--muted);flex:1">SL %
+              <input id="scalping-cfg-sl" type="number" min="0.05" max="1" step="0.05" value="0.15"
+                style="width:100%;margin-top:3px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px"/>
+            </label>
+          </div>
+          <label style="font-size:11px;color:var(--muted)">Confiance min
+            <input id="scalping-cfg-conf" type="number" min="50" max="100" step="5" value="65"
+              style="width:100%;margin-top:3px;padding:5px 8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px"/>
+          </label>
+          <button onclick="saveScalpingConfig()"
+            style="width:100%;padding:7px;background:var(--accent);color:#0d1117;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:700">
+            💾 Sauvegarder
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Colonne droite : graphique -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+        <div style="font-size:11px;color:var(--muted);letter-spacing:.08em">GRAPHIQUE 1 MINUTE · 100 bougies</div>
+        <div style="font-size:11px;color:var(--muted)">
+          <strong style="color:var(--text)">RSI(7) · EMA(5/13) · MACD</strong> ·
+          refresh <strong style="color:var(--accent)">30s</strong>
+        </div>
+      </div>
+      <div id="scalping-chart" style="height:480px"></div>
+    </div>
+  </div>
+
+  <!-- ④ INDICATEURS (6 cartes) -->
+  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="RSI (7 périodes) — Relative Strength Index
+< 30 → survente, signal LONG potentiel
+> 70 → surachat, signal SHORT potentiel
+Zone 30–70 → neutre">RSI(7)</div>
+      <div id="scalping-rsi" style="font-size:22px;font-weight:700">—</div>
+      <div style="height:3px;border-radius:2px;margin-top:8px;background:var(--border)">
+        <div id="scalping-rsi-fill" style="height:100%;border-radius:2px;transition:width .4s"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:2px">
+        <span>0</span><span>30</span><span>70</span><span>100</span>
+      </div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="EMA 5 / EMA 13 (bougies 1 min)
+EMA 5 > EMA 13 → tendance haussière
+EMA 5 < EMA 13 → tendance baissière
+Croisement = changement de direction imminant">EMA 5/13</div>
+      <div id="scalping-ema" style="font-size:12px;font-weight:600">—</div>
+      <div id="scalping-ema-status" style="font-size:11px;margin-top:6px;color:var(--muted)">—</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="MACD (6,13,4) — 1 minute
+Histogramme = différence Ligne − Signal
+> 0 → momentum haussier
+< 0 → momentum baissier
+L = Ligne MACD · S = Signal">MACD(6,13,4)</div>
+      <div id="scalping-macd-hist" style="font-size:22px;font-weight:700">—</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px">L:<span id="scalping-macd-line">—</span> S:<span id="scalping-macd-signal">—</span></div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="Volume Delta (dernière bougie)
+% du volume acheteur vs vendeur
+> 60% → pression acheteuse (LONG)
+< 40% → pression vendeuse (SHORT)
+40–60% → équilibre (neutre)">Vol Delta</div>
+      <div id="scalping-vol-pct" style="font-size:22px;font-weight:700">—</div>
+      <div style="height:4px;border-radius:3px;margin-top:8px;background:var(--border);overflow:hidden">
+        <div id="scalping-vol-fill" style="height:100%;border-radius:3px;transition:width .4s"></div>
+      </div>
+      <div id="scalping-vol-trend" style="font-size:10px;color:var(--muted);margin-top:3px">—</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="Stochastique (5,3) — 1 minute
+%K = niveau relatif du prix récent
+%D = moyenne de %K (ligne signal)
+> 80 → surachat, possible retournement
+< 20 → survente, possible rebond
+Croisement %K/%D = signal d'entrée">Stoch(5,3)</div>
+      <div id="scalping-stoch" style="font-size:20px;font-weight:600">—</div>
+      <div id="scalping-stoch-status" style="font-size:11px;color:var(--muted);margin-top:6px">—</div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="Score composite (0–100)
+≥ 65 → BUY · ≤ 35 → SELL · sinon HOLD
+RSI : +25 max (survente/surachat)
+EMA : +25 max (alignement tendance)
+MACD : ±25 (momentum histogramme)
+Vol : +25 max (pression directionnelle)
+BB : bonus si prix aux bandes">Score</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
+        <div style="text-align:center" data-tooltip="Contribution RSI au score (max ±25)"><div style="font-size:14px;font-weight:700" id="sc-rsi">—</div><div style="font-size:9px;color:var(--muted)">RSI</div></div>
+        <div style="text-align:center" data-tooltip="Contribution EMA au score (max ±25)"><div style="font-size:14px;font-weight:700" id="sc-ema">—</div><div style="font-size:9px;color:var(--muted)">EMA</div></div>
+        <div style="text-align:center" data-tooltip="Contribution MACD au score (max ±25)"><div style="font-size:14px;font-weight:700" id="sc-macd">—</div><div style="font-size:9px;color:var(--muted)">MACD</div></div>
+        <div style="text-align:center" data-tooltip="Contribution Volume au score (max ±25)"><div style="font-size:14px;font-weight:700" id="sc-vol">—</div><div style="font-size:9px;color:var(--muted)">Vol</div></div>
+      </div>
+      <div id="scalping-bb-state" style="font-size:10px;color:var(--muted)" data-tooltip="Bandes de Bollinger (20,2)
+Largeur = volatilité actuelle
+Prix proche bande haute → surachat
+Prix proche bande basse → survente">BB: <span id="scalping-bb-width">—</span></div>
+    </div>
+  </div>
+
+  <!-- ⑤ CONDITIONS + REASONING (2 colonnes) -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px">
+      <div style="font-size:11px;color:var(--muted);letter-spacing:.08em;margin-bottom:10px">CONDITIONS AVANT TRADE</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">
+        <div style="flex:1;min-width:140px">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:6px">🔒 BLOQUANTES</div>
+          <div id="scalping-checks-gates" style="display:flex;flex-direction:column;gap:4px"></div>
+        </div>
+        <div style="flex:1;min-width:140px">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:6px">📊 INDICATEURS</div>
+          <div id="scalping-checks-indicators" style="display:flex;flex-direction:column;gap:4px"></div>
+        </div>
+      </div>
+      <div id="scalping-score-detail" style="margin-top:10px;padding:7px;background:var(--bg);border-radius:6px;font-size:11px;color:var(--muted);font-family:monospace">—</div>
+      <div id="scalping-blocking" style="display:none;margin-top:8px;padding:7px 10px;font-size:12px;color:var(--red);border-left:3px solid var(--red)"></div>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px">
+      <div style="font-size:11px;color:var(--muted);letter-spacing:.08em;margin-bottom:10px">REASONING</div>
+      <div id="scalping-reasoning" style="font-size:12px;color:var(--muted);line-height:1.6">—</div>
+    </div>
+  </div>
+
+  <!-- ⑥ HISTORIQUE -->
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+      <div style="font-size:11px;color:var(--muted);letter-spacing:.08em">HISTORIQUE DES TRADES SCALPING</div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span id="scalping-stats-trades" style="font-size:12px;color:var(--muted)"></span>
+        <span id="scalping-stats-winrate" style="font-size:12px;font-weight:700"></span>
+        <div id="scalping-history-pnl" style="font-size:13px;font-weight:700"></div>
+      </div>
+    </div>
+    <div id="scalping-history-body">
+      <div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Aucun trade pour l'instant</div>
+    </div>
+  </div>
+
+</div>
+</div><!-- /tab-scalping -->
 
 </main>
 

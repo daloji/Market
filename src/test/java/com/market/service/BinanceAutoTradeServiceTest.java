@@ -85,7 +85,7 @@ class BinanceAutoTradeServiceTest {
         when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{\"avgPrice\":\"100000\"}");
         when(futuresService.placeCloseOrder(any(), any(), any(), anyDouble(), any(), any())).thenReturn("{}");
         when(futuresService.cancelAllOrders(any())).thenReturn("{}");
-        when(futuresService.getOpenOrders(any())).thenReturn("[{\"type\":\"STOP_MARKET\"},{\"type\":\"TAKE_PROFIT_MARKET\"}]");
+        when(futuresService.getOpenAlgoOrders(any())).thenReturn("[{\"orderType\":\"STOP_MARKET\"},{\"orderType\":\"TAKE_PROFIT_MARKET\"}]");
         when(futuresService.getAvailableBalance()).thenReturn(500.0); // sufficient balance by default
         when(tradeService.openTrade(anyDouble(), anyDouble(), any(), anyInt(), anyDouble(), anyDouble(),
                 anyDouble(), anyDouble(), anyDouble(), any(), any(), any(), any()))

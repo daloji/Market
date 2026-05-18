@@ -941,14 +941,15 @@ public class BinanceAutoTradeService {
             }
 
             // 6. Réconciliation — vérifie que les ordres SL/TP existent bien sur Binance
+            // SL/TP sont des algo orders depuis la migration vers /fapi/v1/algoOrder
             try {
-                String ordersJson = futuresService.getOpenOrders(symbol);
+                String ordersJson = futuresService.getOpenAlgoOrders(symbol);
                 JsonNode orders = mapper.readTree(ordersJson);
                 boolean hasSl = false;
                 int tpCount = 0;
                 if (orders.isArray()) {
                     for (JsonNode o : orders) {
-                        String type = o.path("type").asText("");
+                        String type = o.path("orderType").asText("");
                         if ("STOP_MARKET".equals(type))         hasSl = true;
                         if ("TAKE_PROFIT_MARKET".equals(type))  tpCount++;
                     }

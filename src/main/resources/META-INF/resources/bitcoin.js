@@ -873,6 +873,11 @@ function setupTabs() {
         chartSimu.applyOptions({ width: c.clientWidth });
         chartSimu.timeScale().fitContent();
       }
+      if (btn.dataset.tab === 'scalping') {
+        startScalpingRefresh();
+      } else {
+        stopScalpingRefresh();
+      }
     });
   });
 }
@@ -1685,4 +1690,656 @@ function realCloseModal() {
 }
 function realModalBgClick(e) {
   if (e.target === document.getElementById('real-close-modal')) realCloseModal();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// SCALPING TAB — isolated, zero impact on existing code
+// ════════════════════════════════════════════════════════════════════════════
+
+let scalpingChart        = null;
+let scalpingCandles      = null;
+let scalpingRefreshTimer = null;
+let lastScalpingPrice    = 0;
+const SCALPING_REFRESH_MS = 30_000;
+
+// ── Load & render ─────────────────────────────────────────────────────────
+
+async function loadScalpingSignal() {
+  try {
+    const s = await fetch('/api/crypto/btc/scalping').then(r => r.json());
+    renderScalpingSignal(s);
+    document.getElementById('scalping-last-update').textContent =
+      'Mis à jour : ' + new Date().toLocaleTimeString('fr-FR');
+  } catch (e) {
+    console.error('[Scalping]', e);
+  }
+}
+
+function renderScalpingSignal(s) {
+  if (s.error) {
+    document.getElementById('scalping-direction').textContent = 'ERR';
+    document.getElementById('scalping-reasoning').textContent = s.error;
+    return;
+  }
+
+  const GREEN = 'var(--green)', RED = 'var(--red)', MUTED = 'var(--muted)', ACC = 'var(--accent)';
+  const fmtP  = v => v ? '$' + v.toLocaleString('fr-FR', {minimumFractionDigits:1, maximumFractionDigits:1}) : '—';
+  const fmtN  = v => v != null ? v.toFixed(2) : '—';
+  const sign  = v => v > 0 ? '+' + v.toFixed(2) + '%' : v.toFixed(2) + '%';
+  const scoreColor = v => v > 0 ? GREEN : v < 0 ? RED : MUTED;
+
+  // Direction card
+  const card = document.getElementById('scalping-card');
+  const dir  = s.direction;
+  card.className = 'signal-card ' + (dir === 'LONG' ? 'long' : dir === 'SHORT' ? 'short' : '');
+  document.getElementById('scalping-direction').textContent   = dir;
+  document.getElementById('scalping-confidence').textContent  = s.confidence + ' / 100';
+
+  // Levels
+  if (s.currentPrice) lastScalpingPrice = s.currentPrice;
+  document.getElementById('scalping-price').textContent   = fmtP(s.currentPrice);
+  document.getElementById('scalping-tp1').textContent     = fmtP(s.tp1);
+  document.getElementById('scalping-tp2').textContent     = fmtP(s.tp2);
+  document.getElementById('scalping-sl').textContent      = fmtP(s.stopLoss);
+  document.getElementById('scalping-atr').textContent     = fmtN(s.atr);
+  document.getElementById('scalping-tp1-pnl').textContent = s.tp1PnlPct != null ? sign(s.tp1PnlPct) : '';
+  document.getElementById('scalping-tp2-pnl').textContent = s.tp2PnlPct != null ? sign(s.tp2PnlPct) : '';
+  document.getElementById('scalping-sl-pnl').textContent  = s.slPnlPct  != null ? sign(s.slPnlPct)  : '';
+  document.getElementById('scalping-atr-pct').textContent = s.atrPct != null ? s.atrPct.toFixed(2) + '%' : '';
+
+  // RSI(7)
+  const rsi = s.rsi7;
+  const rsiEl = document.getElementById('scalping-rsi');
+  rsiEl.textContent = rsi != null ? rsi.toFixed(1) : '—';
+  rsiEl.style.color = rsi < 30 ? GREEN : rsi > 70 ? RED : 'var(--text)';
+  const fill = document.getElementById('scalping-rsi-fill');
+  fill.style.width = (rsi != null ? Math.min(100, rsi) : 0) + '%';
+  fill.style.background = rsi < 30 ? GREEN : rsi > 70 ? RED : ACC;
+
+  // EMA 5/13
+  document.getElementById('scalping-ema').textContent =
+    (s.ema5 ? s.ema5.toFixed(0) : '—') + ' / ' + (s.ema13 ? s.ema13.toFixed(0) : '—');
+  const emaStatus = document.getElementById('scalping-ema-status');
+  const p = s.currentPrice;
+  if (p && s.ema5 && s.ema13) {
+    if (p > s.ema5 && s.ema5 > s.ema13) {
+      emaStatus.textContent = '▲ Bullish (prix > EMA5 > EMA13)'; emaStatus.style.color = GREEN;
+    } else if (p < s.ema5 && s.ema5 < s.ema13) {
+      emaStatus.textContent = '▼ Bearish (prix < EMA5 < EMA13)'; emaStatus.style.color = RED;
+    } else {
+      emaStatus.textContent = '— Mixte'; emaStatus.style.color = MUTED;
+    }
+  }
+
+  // MACD
+  const hist = s.macdHistogram;
+  const histEl = document.getElementById('scalping-macd-hist');
+  histEl.textContent = hist != null ? (hist > 0 ? '+' : '') + hist.toFixed(2) : '—';
+  histEl.style.color = hist > 0 ? GREEN : hist < 0 ? RED : MUTED;
+  document.getElementById('scalping-macd-line').textContent   = s.macdLine   != null ? s.macdLine.toFixed(2)   : '—';
+  document.getElementById('scalping-macd-signal').textContent = s.macdSignal != null ? s.macdSignal.toFixed(2) : '—';
+
+  // Volume Delta
+  const vd = s.volumeDeltaPct;
+  const vdEl = document.getElementById('scalping-vol-pct');
+  vdEl.textContent  = vd != null ? vd.toFixed(1) + '%' : '—';
+  vdEl.style.color  = vd > 52 ? GREEN : vd < 48 ? RED : MUTED;
+  const vFill = document.getElementById('scalping-vol-fill');
+  vFill.style.width      = (vd != null ? Math.min(100, vd) : 50) + '%';
+  vFill.style.background = vd > 52 ? GREEN : vd < 48 ? RED : ACC;
+  const volTrendLabels = { STRONG_BUY:'🟢 Fort achat', BUY:'🟢 Achat', NEUTRAL:'⚪ Neutre', SELL:'🔴 Vente', STRONG_SELL:'🔴 Forte vente' };
+  document.getElementById('scalping-vol-trend').textContent = volTrendLabels[s.volumeDeltaTrend] || s.volumeDeltaTrend;
+
+  // Stochastic
+  const stEl = document.getElementById('scalping-stoch');
+  stEl.textContent = (s.stochK != null ? s.stochK.toFixed(1) : '—') + ' / ' + (s.stochD != null ? s.stochD.toFixed(1) : '—');
+  const stStatus = document.getElementById('scalping-stoch-status');
+  if (s.stochK < 20) { stStatus.textContent = '▲ Oversold'; stStatus.style.color = GREEN; }
+  else if (s.stochK > 80) { stStatus.textContent = '▼ Overbought'; stStatus.style.color = RED; }
+  else { stStatus.textContent = '— Neutre'; stStatus.style.color = MUTED; }
+
+  // Bollinger
+  const bbEl = document.getElementById('scalping-bb-width');
+  bbEl.textContent = s.bbWidth != null ? s.bbWidth.toFixed(2) + '%' : '—';
+  const bbStateEl = document.getElementById('scalping-bb-state');
+  const bbColors = { SQUEEZE:'#f0b429', NORMAL: MUTED, EXPANSION: ACC };
+  const bbLabels = { SQUEEZE:'🟡 SQUEEZE — faible volatilité', NORMAL:'⚪ Normal', EXPANSION:'🔵 Expansion' };
+  bbStateEl.textContent = bbLabels[s.bbState] || s.bbState;
+  bbStateEl.style.color = bbColors[s.bbState] || MUTED;
+
+  // Score breakdown
+  const scoreEl = (id, v) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent  = v != null ? (v > 0 ? '+' : '') + v : '—';
+    el.style.color  = scoreColor(v);
+  };
+  scoreEl('sc-rsi',  s.rsiScore);
+  scoreEl('sc-ema',  s.emaScore);
+  scoreEl('sc-macd', s.macdScore);
+  scoreEl('sc-vol',  s.volScore);
+  document.getElementById('scalping-reasoning').textContent = s.reasoning || '';
+
+  // 1m chart
+  if (s.candles && s.candles.length) renderScalpingChart(s);
+}
+
+// ── 1m chart ──────────────────────────────────────────────────────────────
+
+function initScalpingChart() {
+  const container = document.getElementById('scalping-chart');
+  if (!container || scalpingChart) return;
+  scalpingChart = LightweightCharts.createChart(container, {
+    autoSize:   true,
+    layout:     { background: { color: '#161b22' }, textColor: '#c9d1d9' },
+    grid:       { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+    crosshair:  { mode: LightweightCharts.CrosshairMode.Normal },
+    timeScale:  { timeVisible: true, secondsVisible: false, borderColor: '#30363d' },
+    rightPriceScale: { borderColor: '#30363d' },
+  });
+  scalpingCandles = scalpingChart.addCandlestickSeries({
+    upColor: '#3fb950', downColor: '#f85149',
+    borderUpColor: '#3fb950', borderDownColor: '#f85149',
+    wickUpColor: '#3fb950', wickDownColor: '#f85149',
+  });
+}
+
+function renderScalpingChart(s) {
+  if (!scalpingChart) initScalpingChart();
+  if (!scalpingChart) return;
+  const data = s.candles.map(c => ({
+    time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
+  })).sort((a, b) => a.time - b.time);
+  scalpingCandles.setData(data);
+
+  // Price lines for SL / TP1 / TP2
+  scalpingChart.priceScale('right');
+  [
+    { price: s.tp1,      color: '#3fb950', title: 'TP1', lineWidth: 1 },
+    { price: s.tp2,      color: '#3fb950', title: 'TP2', lineWidth: 1 },
+    { price: s.stopLoss, color: '#f85149', title: 'SL',  lineWidth: 1 },
+  ].forEach(({ price, color, title, lineWidth }) => {
+    if (!price) return;
+    scalpingCandles.createPriceLine({ price, color, title, lineWidth, lineStyle: 2, axisLabelVisible: true });
+  });
+  scalpingChart.timeScale().fitContent();
+}
+
+// ── Auto-refresh when scalping tab is visible ─────────────────────────────
+
+function startScalpingRefresh() {
+  if (scalpingRefreshTimer) clearInterval(scalpingRefreshTimer);
+  loadScalpingSignal();
+  loadScalpingStatus();
+  loadScalpingDiagnose();
+  loadScalpingHistory();
+  scalpingRefreshTimer = setInterval(() => {
+    loadScalpingSignal();
+    loadScalpingStatus();
+    loadScalpingDiagnose();
+    loadScalpingHistory();
+  }, SCALPING_REFRESH_MS);
+}
+
+function stopScalpingRefresh() {
+  if (scalpingRefreshTimer) { clearInterval(scalpingRefreshTimer); scalpingRefreshTimer = null; }
+}
+
+// ── Scalping auto-trade activation ────────────────────────────────────────
+
+let scalpingEnabled = false;
+
+async function loadScalpingStatus() {
+  try {
+    const s = await fetch('/api/scalping/status').then(r => r.json());
+    renderScalpingStatus(s);
+  } catch (e) { console.warn('[Scalping status]', e); }
+}
+
+function renderScalpingStatus(s) {
+  scalpingEnabled = !!s.enabled;
+
+  const statusEl = document.getElementById('scalping-bot-status');
+  const btnEl    = document.getElementById('scalping-toggle-btn');
+  if (s.enabled) {
+    statusEl.textContent = '● Activé';
+    statusEl.style.color = 'var(--green)';
+    btnEl.textContent    = '⏹ Désactiver auto-scalping';
+    btnEl.style.background = '#da3633';
+  } else {
+    statusEl.textContent = '● Désactivé';
+    statusEl.style.color = 'var(--muted)';
+    btnEl.textContent    = '▶ Activer auto-scalping';
+    btnEl.style.background = '#238636';
+  }
+
+  // Wallet balance
+  const w = s.wallet;
+  if (w && w.walletBalance != null) {
+    const total = w.walletBalance;
+    const avail = w.availableBalance;
+    const unreal = w.unrealizedProfit || 0;
+    const totalEl = document.getElementById('scalping-wallet-total');
+    const availEl = document.getElementById('scalping-wallet-avail');
+    totalEl.textContent = `$${total.toFixed(2)}`;
+    totalEl.style.color = unreal >= 0 ? 'var(--text)' : 'var(--red)';
+    availEl.textContent = `dispo: $${avail.toFixed(2)}` + (unreal !== 0 ? ` · PnL: ${unreal >= 0 ? '+' : ''}${unreal.toFixed(2)}$` : '');
+  }
+
+  // Sync config inputs
+  if (s.amountUsdt)    setVal('scalping-cfg-amount', s.amountUsdt);
+  if (s.leverage)      setVal('scalping-cfg-lev',    s.leverage);
+  if (s.tpPct)         setVal('scalping-cfg-tp',     s.tpPct);
+  if (s.slPct)         setVal('scalping-cfg-sl',     s.slPct);
+  if (s.minConfidence) setVal('scalping-cfg-conf',   s.minConfidence);
+
+  // Last result
+  const resultEl = document.getElementById('scalping-last-result');
+  if (s.lastResult && s.lastResult.status) {
+    const r = s.lastResult;
+    const badge = {
+      placed:  `<span style="color:var(--green);font-weight:700">✅ TRADE PLACÉ</span>`,
+      closed:  `<span style="color:var(--accent);font-weight:700">🔒 FERMÉ</span>`,
+      skipped: `<span style="color:var(--muted);font-weight:700">⏭ SKIP</span>`,
+      error:   `<span style="color:var(--red);font-weight:700">❌ ERREUR</span>`
+    }[r.status] || `<span>${r.status}</span>`;
+
+    if (r.status === 'placed') {
+      const dir = r.direction === 'LONG'
+        ? `<span style="color:var(--green);font-weight:700">▲ LONG</span>`
+        : `<span style="color:var(--red);font-weight:700">▼ SHORT</span>`;
+      const msg = r.message ?? '';
+      const hasWarning = msg.includes('⚠');
+      const msgColor = hasWarning ? 'var(--red)' : 'var(--muted)';
+      resultEl.innerHTML =
+        `${badge} ${dir} · conf <strong>${r.confidence}%</strong> · entrée <strong>$${r.entryPrice?.toFixed(1) ?? '—'}</strong>` +
+        `<br><span style="color:${msgColor};font-size:11px">${msg}</span>`;
+    } else if (r.status === 'closed') {
+      const pnlColor = (r.pnl ?? 0) >= 0 ? 'var(--green)' : 'var(--red)';
+      resultEl.innerHTML =
+        `${badge} ${r.message ?? ''} · prix <strong>$${r.entryPrice?.toFixed(1) ?? '—'}</strong>` +
+        (r.pnl != null ? ` · <span style="color:${pnlColor};font-weight:700">${r.pnl >= 0 ? '+' : ''}${r.pnl.toFixed(2)} USDT</span>` : '');
+    } else {
+      resultEl.innerHTML = `${badge} <span style="color:var(--muted)">${r.message ?? ''}</span>`;
+    }
+
+    if (s.cooldownRemaining > 0) {
+      resultEl.innerHTML += ` · <span style="color:var(--muted)">⏳ ${Math.ceil(s.cooldownRemaining / 60)} min cooldown</span>`;
+    }
+  }
+
+  // Active position
+  const posEl = document.getElementById('scalping-active-pos');
+  if (s.activeDir) {
+    posEl.style.display = 'block';
+    const isLong = s.activeDir === 'LONG';
+    const col    = isLong ? 'var(--green)' : 'var(--red)';
+    const dir    = isLong ? '▲ LONG' : '▼ SHORT';
+
+    // Direction badge
+    const dirEl = document.getElementById('scalping-pos-dir');
+    dirEl.textContent   = dir;
+    dirEl.style.color   = col;
+    dirEl.style.border  = `1px solid ${col}`;
+
+    // Confidence
+    document.getElementById('scalping-pos-conf').textContent =
+      s.activeConf ? `Conf: ${s.activeConf}%` : '';
+
+    // Duration
+    const durEl = document.getElementById('scalping-pos-duration');
+    if (s.activeOpenedAt) {
+      const sec = Math.floor((Date.now() - new Date(s.activeOpenedAt).getTime()) / 1000);
+      const h   = Math.floor(sec / 3600);
+      const m   = Math.floor((sec % 3600) / 60);
+      const ss  = sec % 60;
+      durEl.textContent = h > 0 ? `⏱ ${h}h ${m}m` : m > 0 ? `⏱ ${m}m ${ss}s` : `⏱ ${ss}s`;
+    } else {
+      durEl.textContent = '';
+    }
+
+    // Entry
+    document.getElementById('scalping-pos-entry').textContent =
+      s.activeEntry ? `$${s.activeEntry.toFixed(1)}` : '—';
+
+    // Live unrealized P&L
+    const pnlCard = document.getElementById('scalping-pos-pnl-card');
+    const pnlEl   = document.getElementById('scalping-pos-pnl');
+    const pnlPct  = document.getElementById('scalping-pos-pnl-pct');
+    if (s.activeEntry && s.activeQty && lastScalpingPrice) {
+      const rawPnl = isLong
+        ? (lastScalpingPrice - s.activeEntry) * s.activeQty
+        : (s.activeEntry - lastScalpingPrice) * s.activeQty;
+      const pnlPctVal = isLong
+        ? (lastScalpingPrice - s.activeEntry) / s.activeEntry * 100
+        : (s.activeEntry - lastScalpingPrice) / s.activeEntry * 100;
+      const pnlColor  = rawPnl >= 0 ? 'var(--green)' : 'var(--red)';
+      pnlEl.textContent  = `${rawPnl >= 0 ? '+' : ''}${rawPnl.toFixed(2)} $`;
+      pnlEl.style.color  = pnlColor;
+      pnlPct.textContent = `${pnlPctVal >= 0 ? '+' : ''}${pnlPctVal.toFixed(3)}%`;
+      pnlPct.style.color = pnlColor;
+      pnlCard.style.borderTop = `2px solid ${pnlColor}`;
+    } else {
+      pnlEl.textContent  = 'En attente prix';
+      pnlEl.style.color  = 'var(--muted)';
+      pnlPct.textContent = '';
+      pnlCard.style.borderTop = '';
+    }
+
+    // TP + distance
+    const tpEl   = document.getElementById('scalping-pos-tp');
+    const tpDist = document.getElementById('scalping-pos-tp-dist');
+    if (s.activeTp) {
+      tpEl.textContent = `$${s.activeTp.toFixed(1)}`;
+      if (s.activeEntry) {
+        const d = isLong
+          ? (s.activeTp - s.activeEntry) / s.activeEntry * 100
+          : (s.activeEntry - s.activeTp) / s.activeEntry * 100;
+        tpDist.textContent = `+${d.toFixed(3)}%`;
+      }
+    }
+
+    // SL + distance
+    const slEl   = document.getElementById('scalping-pos-sl');
+    const slDist = document.getElementById('scalping-pos-sl-dist');
+    if (s.activeSl) {
+      slEl.textContent = `$${s.activeSl.toFixed(1)}`;
+      if (s.activeEntry) {
+        const d = isLong
+          ? (s.activeEntry - s.activeSl) / s.activeEntry * 100
+          : (s.activeSl - s.activeEntry) / s.activeEntry * 100;
+        slDist.textContent = `-${d.toFixed(3)}%`;
+      }
+    }
+  } else {
+    posEl.style.display = 'none';
+  }
+}
+
+async function toggleScalping() {
+  const url = scalpingEnabled ? '/api/scalping/disable' : '/api/scalping/enable';
+  const msgEl = document.getElementById('scalping-bot-msg');
+  try {
+    msgEl.textContent = '…';
+    const r = await fetch(url, { method: 'POST' }).then(res => res.json());
+    if (r.error) { msgEl.textContent = '❌ ' + r.error; return; }
+    msgEl.textContent = r.message || '';
+    await loadScalpingStatus();
+    if (r.firstCheck) renderScalpingStatus({ ...await fetch('/api/scalping/status').then(x => x.json()) });
+  } catch (e) {
+    msgEl.textContent = '❌ ' + e.message;
+  }
+}
+
+async function triggerScalping() {
+  const msgEl = document.getElementById('scalping-bot-msg');
+  try {
+    msgEl.textContent = '…';
+    const r = await fetch('/api/scalping/trigger', { method: 'POST' }).then(res => res.json());
+    msgEl.textContent = (r.status || '') + ': ' + (r.message || '');
+    await loadScalpingStatus();
+  } catch (e) {
+    msgEl.textContent = '❌ ' + e.message;
+  }
+}
+
+async function checkBinanceOrders() {
+  const msgEl = document.getElementById('scalping-bot-msg');
+  try {
+    msgEl.textContent = '⏳ Récupération ordres…';
+    const resp = await fetch('/api/scalping/orders');
+    const text = await resp.text();
+    let orders;
+    try { orders = JSON.parse(text); } catch(e) { orders = text; }
+    if (Array.isArray(orders)) {
+      if (orders.length === 0) {
+        msgEl.textContent = '📋 Aucun ordre ouvert sur Binance';
+      } else {
+        const lines = orders.map(o =>
+          `[${o.type}] ${o.side} @ ${o.stopPrice} (${o.status})`
+        ).join(' | ');
+        msgEl.textContent = `📋 ${orders.length} ordre(s): ${lines}`;
+      }
+    } else {
+      msgEl.textContent = '📋 ' + (typeof orders === 'object' ? JSON.stringify(orders) : text).slice(0, 200);
+    }
+  } catch (e) {
+    msgEl.textContent = '❌ ' + e.message;
+  }
+}
+
+async function saveScalpingConfig() {
+  const body = {
+    amountUsdt:    parseFloat(document.getElementById('scalping-cfg-amount').value) || 0,
+    leverage:      parseInt(document.getElementById('scalping-cfg-lev').value)      || 0,
+    tpPct:         parseFloat(document.getElementById('scalping-cfg-tp').value)     || 0,
+    slPct:         parseFloat(document.getElementById('scalping-cfg-sl').value)     || 0,
+    minConfidence: parseInt(document.getElementById('scalping-cfg-conf').value)     || 0,
+  };
+  try {
+    await fetch('/api/scalping/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    document.getElementById('scalping-bot-msg').textContent = '✅ Config sauvegardée';
+  } catch (e) {
+    document.getElementById('scalping-bot-msg').textContent = '❌ ' + e.message;
+  }
+}
+
+function setVal(id, v) { const el = document.getElementById(id); if (el) el.value = v; }
+
+// ── Pre-trade checklist ───────────────────────────────────────────────────────
+
+async function loadScalpingDiagnose() {
+  try {
+    const d = await fetch('/api/scalping/diagnose').then(r => r.json());
+    renderScalpingDiagnose(d);
+  } catch (e) { console.warn('[Scalping diagnose]', e); }
+}
+
+function renderScalpingDiagnose(d) {
+  // ── Would-trade banner ────────────────────────────────────────────────────
+  const banner = document.getElementById('scalping-would-trade');
+  if (banner) {
+    if (d.wouldTrade) {
+      banner.textContent = '✅ PRÊT À TRADER';
+      banner.style.color = 'var(--green)';
+      banner.style.border = '1px solid var(--green)';
+    } else {
+      banner.textContent = '🚫 BLOQUÉ';
+      banner.style.color = 'var(--red)';
+      banner.style.border = '1px solid var(--red)';
+    }
+  }
+
+  // ── Gate conditions ───────────────────────────────────────────────────────
+  const gates = [
+    { label: 'Auto-scalping activé',     ok: d.enabled,
+      detail: d.enabled ? 'ON' : 'OFF — cliquer Activer' },
+    { label: 'API Binance configurée',   ok: d.configured,
+      detail: d.configured ? 'OK' : 'Clé manquante' },
+    { label: 'Pas de position interne',  ok: !d.hasActivePosition,
+      detail: d.hasActivePosition ? `Position ${d.activeDir} en cours` : 'Libre' },
+    { label: 'Cooldown écoulé',          ok: d.cooldownOk,
+      detail: d.cooldownOk ? 'OK' : `Encore ${d.cooldownRemainMin} min` },
+    { label: 'Direction signal',         ok: d.directionOk,
+      detail: d.directionOk ? (d.signalDirection || '?') : `WAIT (conf=${d.signalConfidence ?? '?'}%)` },
+    { label: `Confiance ≥ ${d.minConfidence}%`, ok: d.confidenceOk,
+      detail: d.signalError ? '⚠ Erreur signal' : `${d.signalConfidence ?? '?'}%` },
+    { label: 'Pas de position Binance',  ok: d.binancePosOk,
+      detail: d.binancePosDetail || '—' },
+  ];
+
+  const gatesEl = document.getElementById('scalping-checks-gates');
+  if (gatesEl) gatesEl.innerHTML = gates.map(c => checkRow(c)).join('');
+
+  // ── Indicator conditions ──────────────────────────────────────────────────
+  const indicators = d.signalError ? [] : [
+    { label: 'RSI(7)',          ok: d.rsiOk,      detail: d.rsiDetail      || '—' },
+    { label: 'EMA 5/13',       ok: d.emaOk,      detail: d.emaDetail      || '—' },
+    { label: 'MACD histo',     ok: d.macdOk,     detail: d.macdDetail     || '—' },
+    { label: 'Volume delta',   ok: d.volDeltaOk, detail: d.volDeltaDetail || '—' },
+    { label: 'Stoch(5,3)',     ok: d.stochOk,    detail: d.stochDetail    || '—' },
+    { label: 'BB non-squeeze', ok: d.bbOk,       detail: d.bbDetail       || '—' },
+  ];
+
+  const indEl = document.getElementById('scalping-checks-indicators');
+  if (indEl) {
+    if (d.signalError) {
+      indEl.innerHTML = `<div style="color:var(--red);font-size:13px">⚠ ${d.signalError}</div>`;
+    } else {
+      indEl.innerHTML = indicators.map(c => checkRow(c, true)).join('');
+    }
+  }
+
+  // ── Score detail ──────────────────────────────────────────────────────────
+  const scoreEl = document.getElementById('scalping-score-detail');
+  if (scoreEl) scoreEl.textContent = d.scoreDetail || '—';
+
+  // ── Blocking reason ───────────────────────────────────────────────────────
+  const blockEl = document.getElementById('scalping-blocking');
+  if (blockEl) {
+    if (d.blockingReason) {
+      blockEl.style.display = 'block';
+      blockEl.textContent = '🔴 ' + d.blockingReason;
+    } else {
+      blockEl.style.display = 'none';
+    }
+  }
+}
+
+function checkRow(c, informative = false) {
+  const icon  = c.ok ? '✅' : (informative ? '⬜' : '❌');
+  const color = c.ok ? 'var(--green)' : (informative ? 'var(--muted)' : 'var(--red)');
+  const tip   = c.detail && c.detail !== '—' ? `data-tooltip="${c.label}\n${c.detail}"` : `data-tooltip="${c.label}"`;
+  return `<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;
+                       border-radius:6px;background:var(--bg);font-size:12px;overflow:hidden" ${tip}>
+    <span>${icon}</span>
+    <span style="flex:1;color:var(--text);font-size:11px;white-space:nowrap;
+                 overflow:hidden;text-overflow:ellipsis">${c.label}</span>
+    <span style="color:${color};font-size:11px;font-weight:600;white-space:nowrap">${c.detail}</span>
+  </div>`;
+}
+
+// ── Scalping history ──────────────────────────────────────────────────────────
+
+async function loadScalpingHistory() {
+  try {
+    const r = await fetch('/api/scalping/history');
+    if (!r.ok) return;
+    renderScalpingHistory(await r.json());
+  } catch(e) {}
+}
+
+function renderScalpingHistory(trades) {
+  const body     = document.getElementById('scalping-history-body');
+  const pnlEl    = document.getElementById('scalping-history-pnl');
+  const statsWR  = document.getElementById('scalping-stats-winrate');
+  const statsTR  = document.getElementById('scalping-stats-trades');
+  if (!body) return;
+
+  if (!trades || trades.length === 0) {
+    body.innerHTML = `<div style="color:var(--muted);font-size:13px;text-align:center;padding:20px">Aucun trade pour l'instant</div>`;
+    if (pnlEl)   pnlEl.textContent   = '';
+    if (statsWR) statsWR.textContent = '';
+    if (statsTR) statsTR.textContent = '';
+    return;
+  }
+
+  // Compute stats
+  let totalPnl = 0, wins = 0, losses = 0, opens = 0;
+  trades.forEach(t => {
+    if (t.status === 'OPEN') { opens++; return; }
+    totalPnl += (t.pnl || 0);
+    if (t.status === 'TP') wins++;
+    else if (t.status === 'SL') losses++;
+  });
+  const closed   = wins + losses;
+  const winRate  = closed > 0 ? (wins / closed * 100) : null;
+
+  if (pnlEl) {
+    pnlEl.textContent = `${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)} $`;
+    pnlEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  }
+  if (statsTR) {
+    statsTR.textContent = `${closed} trades · ${opens > 0 ? opens + ' ouvert' : ''}`;
+    statsTR.style.color = 'var(--muted)';
+  }
+  if (statsWR && winRate !== null) {
+    statsWR.textContent = `Win: ${winRate.toFixed(0)}% (${wins}W/${losses}L)`;
+    statsWR.style.color = winRate >= 50 ? 'var(--green)' : 'var(--red)';
+  }
+
+  const STATUS_BADGE = {
+    'TP':     `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP</span>`,
+    'SL':     `<span style="background:#3a1a1a;color:var(--red);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🔴 SL</span>`,
+    'OPEN':   `<span style="background:#2a2400;color:var(--accent);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏳ OUVERT</span>`,
+    'MANUAL': `<span style="background:#1e1e2a;color:#8b8bcc;padding:2px 8px;border-radius:4px;font-size:11px">✋ MANUEL</span>`,
+  };
+
+  let html = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead>
+      <tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
+        <th style="padding:4px 8px" data-tooltip="Date et heure d'ouverture du trade">Date</th>
+        <th style="padding:4px 8px" data-tooltip="Direction du trade\nLONG = pari à la hausse\nSHORT = pari à la baisse">Dir</th>
+        <th style="padding:4px 8px" data-tooltip="Score de confiance du signal\n0–100 · seuil minimum configurable">Conf</th>
+        <th style="padding:4px 8px" data-tooltip="Prix d'entrée du marché au moment de l'ordre">Entrée</th>
+        <th style="padding:4px 8px;color:var(--green)" data-tooltip="Take Profit — niveau de clôture gagnante\nOrdre algo Binance">TP</th>
+        <th style="padding:4px 8px;color:var(--red)" data-tooltip="Stop Loss — niveau de clôture perdante\nOrdre algo Binance">SL</th>
+        <th style="padding:4px 8px" data-tooltip="Prix effectif de clôture du trade">Sortie</th>
+        <th style="padding:4px 8px" data-tooltip="Durée totale du trade (de l'ouverture à la clôture)">Durée</th>
+        <th style="padding:4px 8px" data-tooltip="Résultat final du trade\n🟢 TP = objectif atteint\n🔴 SL = stop touché\n✋ Manuel = clôture manuelle\n⏳ Ouvert = en cours">Statut</th>
+        <th style="padding:4px 8px;text-align:right" data-tooltip="Profit ou perte réalisé(e) en USDT\n(hors frais Binance)">P&L</th>
+      </tr>
+    </thead>
+    <tbody>`;
+
+  for (const t of trades) {
+    const isOpen   = t.status === 'OPEN';
+    const isTp     = t.status === 'TP';
+    const dirColor = t.direction === 'LONG' ? 'var(--green)' : 'var(--red)';
+    const pnlColor = (t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+    const dateFmt  = t.openedAt ? new Date(t.openedAt).toLocaleString('fr-FR', {dateStyle:'short', timeStyle:'short'}) : '—';
+    const exitFmt  = isOpen ? '—' : (t.exitPrice ? '$' + t.exitPrice.toFixed(1) : '—');
+    const pnlFmt   = isOpen
+      ? '<span style="color:var(--muted)">—</span>'
+      : `<span style="color:${pnlColor};font-weight:700">${(t.pnl||0) >= 0 ? '+' : ''}${(t.pnl||0).toFixed(2)} $</span>`;
+
+    // Duration
+    let dur = '—';
+    if (t.openedAt && !isOpen && t.closedAt) {
+      const sec = Math.floor((new Date(t.closedAt) - new Date(t.openedAt)) / 1000);
+      const h   = Math.floor(sec / 3600);
+      const m   = Math.floor((sec % 3600) / 60);
+      const s   = sec % 60;
+      dur = h > 0 ? `${h}h${m}m` : m > 0 ? `${m}m${s}s` : `${s}s`;
+    } else if (isOpen && t.openedAt) {
+      const sec = Math.floor((Date.now() - new Date(t.openedAt)) / 1000);
+      const h   = Math.floor(sec / 3600);
+      const m   = Math.floor((sec % 3600) / 60);
+      const s   = sec % 60;
+      dur = `⏱ ${h > 0 ? h + 'h' : ''}${m}m${h > 0 ? '' : s + 's'}`;
+    }
+
+    const rowBg = isOpen ? 'background:rgba(240,180,41,0.05)'
+                : isTp   ? 'background:rgba(46,160,67,0.04)'
+                :          '';
+    const badge = STATUS_BADGE[t.status] || `<span>${t.status}</span>`;
+    html += `<tr style="border-bottom:1px solid var(--border);${rowBg}">
+      <td style="padding:5px 8px;color:var(--muted)">${dateFmt}</td>
+      <td style="padding:5px 8px;font-weight:700;color:${dirColor}">${t.direction === 'LONG' ? '▲ LONG' : '▼ SHORT'}</td>
+      <td style="padding:5px 8px;color:var(--muted)">${t.confidence != null ? t.confidence + '%' : '—'}</td>
+      <td style="padding:5px 8px">$${(t.entryPrice||0).toFixed(1)}</td>
+      <td style="padding:5px 8px;color:var(--green)">${t.tpPrice ? '$' + t.tpPrice.toFixed(1) : '—'}</td>
+      <td style="padding:5px 8px;color:var(--red)">${t.slPrice ? '$' + t.slPrice.toFixed(1) : '—'}</td>
+      <td style="padding:5px 8px">${exitFmt}</td>
+      <td style="padding:5px 8px;color:var(--muted)">${dur}</td>
+      <td style="padding:5px 8px">${badge}</td>
+      <td style="padding:5px 8px;text-align:right">${pnlFmt}</td>
+    </tr>`;
+  }
+
+  html += `</tbody></table>`;
+  body.innerHTML = html;
 }

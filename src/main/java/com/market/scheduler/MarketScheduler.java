@@ -2,6 +2,7 @@ package com.market.scheduler;
 
 import com.market.model.Stock;
 import com.market.service.BinanceAutoTradeService;
+import com.market.service.BinanceScalpingTradeService;
 import com.market.service.FundamentalAnalysisService;
 import com.market.service.RecommendationService;
 import com.market.service.StockDataService;
@@ -22,7 +23,8 @@ public class MarketScheduler {
     @Inject RecommendationService recommendationService;
     @Inject TradeService tradeService;
     @Inject FundamentalAnalysisService fundamentalAnalysisService;
-    @Inject BinanceAutoTradeService autoTradeService;
+    @Inject BinanceAutoTradeService    autoTradeService;
+    @Inject BinanceScalpingTradeService scalpingService;
 
     /**
      * Refreshes quotes and regenerates recommendations for all active stocks.
@@ -63,6 +65,27 @@ public class MarketScheduler {
                     result.direction, result.confidence, result.entryPrice);
         } else if ("error".equals(result.status)) {
             LOG.warnf("[Scheduler] Auto-trade erreur: %s", result.message);
+        }
+    }
+
+    /**
+     * Checks BTC scalping signal (1m) and auto-places trades every minute when enabled.
+     * Completely isolated from the 5m swing auto-trade scheduler.
+     */
+    @Scheduled(every = "1m", delayed = "90s", identity = "btc-scalping-auto-trade")
+    public void scalpingAutoTrade() {
+        if (!scalpingService.isEnabled()) return;
+        BinanceScalpingTradeService.ScalpResult result = scalpingService.checkAndTrade();
+        if ("placed".equals(result.status)) {
+            LOG.infof("[Scalping] ✅ Trade placé: %s conf=%d%% @ %.2f",
+                result.direction, result.confidence, result.entryPrice);
+        } else if ("closed".equals(result.status)) {
+            LOG.infof("[Scalping] 🔒 Position fermée (%s) @ %.2f PnL=%.2f%%",
+                result.message, result.entryPrice, result.pnl);
+        } else if ("error".equals(result.status)) {
+            LOG.warnf("[Scalping] ❌ Erreur: %s", result.message);
+        } else {
+            LOG.debugf("[Scalping] ⏭ Skipped: %s", result.message);
         }
     }
 

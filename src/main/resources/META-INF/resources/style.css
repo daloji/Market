@@ -1,6 +1,8 @@
 :root {
   --bg:        #0d1117;
   --surface:   #161b22;
+  --card:      #161b22;
+  --bg2:       #1c2128;
   --border:    #30363d;
   --text:      #c9d1d9;
   --muted:     #8b949e;
@@ -11,6 +13,9 @@
   --hold:      #d29922;
   --hold-bg:   #2a1e0e;
   --blue:      #58a6ff;
+  --accent:    #f0b429;
+  --green:     #3fb950;
+  --red:       #f85149;
   --radius:    10px;
 }
 

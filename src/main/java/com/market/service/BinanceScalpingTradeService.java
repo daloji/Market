@@ -1,0 +1,700 @@
+package com.market.service;
+
+import com.market.model.ScalpingSignal;
+import com.market.model.ScalpingTrade;
+import io.quarkus.runtime.StartupEvent;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
+import org.jboss.logging.Logger;
+
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * Automatic scalping service for BTC/USDT Futures based on 1m signals.
+ *
+ * Compared to BinanceAutoTradeService (swing/intraday on 1h), this service:
+ *   - Uses ScalpingAnalysisService (1m candles, RSI7/EMA5-13/MACD fast)
+ *   - Tighter default TP/SL: TP=0.3%, SL=0.15% (configurable)
+ *   - Smaller default amount: 20 USDT per trade
+ *   - No signal confirmation (scalping reacts fast)
+ *   - Short cooldown: 5 minutes after closing a position
+ *   - Single TP level (simpler, faster execution)
+ *   - Completely isolated — does NOT interfere with BinanceAutoTradeService
+ *
+ * Called every minute by MarketScheduler when enabled.
+ */
+@ApplicationScoped
+public class BinanceScalpingTradeService {
+
+    private static final Logger LOG = Logger.getLogger(BinanceScalpingTradeService.class);
+
+    private static final long   COOLDOWN_MS      = 5L * 60 * 1000;
+    private static final double DEFAULT_AMOUNT   = 20.0;
+    private static final int    DEFAULT_LEVERAGE = 10;
+    private static final double DEFAULT_TP_PCT   = 0.3;
+    private static final double DEFAULT_SL_PCT   = 0.15;
+    private static final int    DEFAULT_MIN_CONF = 65;
+
+    @Inject ScalpingAnalysisService scalpingService;
+    @Inject BinanceFuturesService   futuresService;
+    @Inject TelegramAlertService    telegramService;
+
+    // ── Runtime state ─────────────────────────────────────────────────────────
+    private final AtomicBoolean           enabled  = new AtomicBoolean(false);
+    private final AtomicInteger           minConf  = new AtomicInteger(0);
+    private final AtomicReference<Double> amount   = new AtomicReference<>(0.0);
+    private final AtomicInteger           leverage = new AtomicInteger(0);
+    private final AtomicReference<Double> tpPct    = new AtomicReference<>(0.0);
+    private final AtomicReference<Double> slPct    = new AtomicReference<>(0.0);
+
+    private volatile ScalpResult lastResult;
+    private volatile Instant     lastTradeAt;
+
+    // Active position tracking
+    private volatile String activeDir;
+    private volatile double activeSlPrice;
+    private volatile double activeTpPrice;
+    private volatile double activeQty;
+    private volatile double activeEntryPrice;
+    private volatile int    activeConf;
+    private volatile Instant activeOpenedAt;
+
+    // Trade history (in-memory cache + DB persistence)
+    private final java.util.Deque<ScalpTrade> tradeHistory =
+        new java.util.concurrent.ConcurrentLinkedDeque<>();
+    private static final int MAX_HISTORY = 100;
+
+    // ── Startup: load history from DB ─────────────────────────────────────────
+
+    @Transactional
+    void onStart(@Observes StartupEvent ev) {
+        List<ScalpingTrade> saved = ScalpingTrade.findRecent(MAX_HISTORY);
+        // Add oldest first so deque order is chronological
+        for (int i = saved.size() - 1; i >= 0; i--) {
+            ScalpingTrade e = saved.get(i);
+            ScalpTrade t    = new ScalpTrade();
+            t.direction  = e.direction;
+            t.entryPrice = e.entryPrice;
+            t.exitPrice  = e.exitPrice;
+            t.tpPrice    = e.tpPrice;
+            t.slPrice    = e.slPrice;
+            t.confidence = e.confidence;
+            t.pnl        = e.pnl;
+            t.status     = e.status;
+            t.openedAt   = e.openedAt;
+            t.closedAt   = e.closedAt;
+            t.dbId       = e.id;
+            tradeHistory.addLast(t);
+        }
+        // Restore active position only if Binance confirms the position still exists
+        ScalpingTrade open = ScalpingTrade.findOpenTrade();
+        if (open != null) {
+            boolean binanceConfirmed = false;
+            double  binanceQty       = 0;
+            if (futuresService.isConfigured()) {
+                try {
+                    String posJson = futuresService.getPositionRisk("BTCUSDT");
+                    com.fasterxml.jackson.databind.JsonNode arr =
+                        new com.fasterxml.jackson.databind.ObjectMapper().readTree(posJson);
+                    if (arr.isArray()) {
+                        for (com.fasterxml.jackson.databind.JsonNode n : arr) {
+                            double amt = Math.abs(n.path("positionAmt").asDouble(0));
+                            if (amt > 0.0001) {
+                                binanceConfirmed = true;
+                                binanceQty       = amt;
+                                break;
+                            }
+                        }
+                    }
+                } catch (Exception ex) {
+                    LOG.warnf("[Scalping] Impossible de vérifier la position Binance au démarrage: %s", ex.getMessage());
+                    // Cannot confirm → assume closed to avoid phantom position
+                }
+            }
+            if (binanceConfirmed) {
+                activeDir        = open.direction;
+                activeEntryPrice = open.entryPrice;
+                activeTpPrice    = open.tpPrice;
+                activeSlPrice    = open.slPrice;
+                activeOpenedAt   = open.openedAt;
+                activeQty        = binanceQty;
+                activeConf       = open.confidence;
+                LOG.infof("[Scalping] Position active restaurée depuis DB: %s @ %.1f (qty=%.4f)",
+                    activeDir, activeEntryPrice, activeQty);
+            } else {
+                // Position closed on Binance while app was down → mark as MANUAL in DB
+                LOG.infof("[Scalping] Position OPEN en DB (id=%d) introuvable sur Binance → marquée MANUAL", open.id);
+                open.status   = "MANUAL";
+                open.closedAt = Instant.now();
+                // Update in-memory history entry too
+                for (ScalpTrade t : tradeHistory) {
+                    if (t.dbId != null && t.dbId.equals(open.id)) {
+                        t.status   = "MANUAL";
+                        t.closedAt = open.closedAt;
+                        break;
+                    }
+                }
+            }
+        }
+        LOG.infof("[Scalping] %d trades chargés depuis la base", saved.size());
+    }
+
+    // ── Enable / Disable / Config ─────────────────────────────────────────────
+
+    public void enable()    { enabled.set(true);  LOG.info("[Scalping] ✅ Auto-scalping activé"); }
+    public void disable()   { enabled.set(false); LOG.info("[Scalping] 🛑 Auto-scalping désactivé"); }
+    public boolean isEnabled() { return enabled.get(); }
+
+    public int    getMinConfidence() { return minConf.get()  > 0 ? minConf.get()  : DEFAULT_MIN_CONF; }
+    public double getAmountUsdt()    { return amount.get()   > 0 ? amount.get()   : DEFAULT_AMOUNT; }
+    public int    getLeverage()      { return leverage.get() > 0 ? leverage.get() : DEFAULT_LEVERAGE; }
+    public double getTpPct()         { return tpPct.get()    > 0 ? tpPct.get()    : DEFAULT_TP_PCT; }
+    public double getSlPct()         { return slPct.get()    > 0 ? slPct.get()    : DEFAULT_SL_PCT; }
+
+    public void setMinConfidence(int v)    { minConf.set(v); }
+    public void setAmountUsdt(double v)    { amount.set(v); }
+    public void setLeverage(int v)         { leverage.set(v); }
+    public void setTpPct(double v)         { tpPct.set(v); }
+    public void setSlPct(double v)         { slPct.set(v); }
+
+    public ScalpResult lastResult() { return lastResult; }
+
+    public List<ScalpTrade> history() {
+        java.util.List<ScalpTrade> list = new java.util.ArrayList<>(tradeHistory);
+        java.util.Collections.reverse(list); // newest first
+        return list;
+    }
+
+    // ── Main entry point ──────────────────────────────────────────────────────
+
+    public ScalpResult checkAndTrade() {
+        if (!futuresService.isConfigured()) {
+            return last(ScalpResult.skipped("Binance API non configurée"));
+        }
+
+        ScalpingSignal sig = scalpingService.getSignal();
+        if (sig.error != null) {
+            return last(ScalpResult.skipped("Signal error: " + sig.error));
+        }
+
+        double price = sig.currentPrice;
+
+        // ── Monitor active position (internal SL/TP) ──────────────────────────
+        if (activeDir != null) {
+            boolean isLong = "LONG".equals(activeDir);
+            boolean slHit  = isLong ? price <= activeSlPrice : price >= activeSlPrice;
+            boolean tpHit  = isLong ? price >= activeTpPrice : price <= activeTpPrice;
+            if (slHit || tpHit) {
+                return last(closePosition(slHit ? "SL" : "TP", price));
+            }
+            return last(ScalpResult.skipped(
+                String.format("Position %s active @ %.1f — SL=%.1f TP=%.1f",
+                    activeDir, activeEntryPrice, activeSlPrice, activeTpPrice)));
+        }
+
+        if (!enabled.get()) {
+            return last(ScalpResult.skipped("Auto-scalping désactivé"));
+        }
+
+        // ── Cooldown ──────────────────────────────────────────────────────────
+        if (lastTradeAt != null) {
+            long elapsed = Instant.now().toEpochMilli() - lastTradeAt.toEpochMilli();
+            if (elapsed < COOLDOWN_MS) {
+                return last(ScalpResult.skipped(String.format(
+                    "Cooldown — %d min restantes", (COOLDOWN_MS - elapsed) / 60_000 + 1)));
+            }
+        }
+
+        // ── Signal check ──────────────────────────────────────────────────────
+        String dir = sig.direction;
+        if ("WAIT".equals(dir) || dir == null) {
+            return last(ScalpResult.skipped("Signal WAIT — conf=" + sig.confidence));
+        }
+        if (sig.confidence < getMinConfidence()) {
+            return last(ScalpResult.skipped(
+                String.format("Confiance insuffisante: %d < %d", sig.confidence, getMinConfidence())));
+        }
+
+        // ── Check no existing position ────────────────────────────────────────
+        try {
+            String posJson = futuresService.getPositionRisk("BTCUSDT");
+            com.fasterxml.jackson.databind.JsonNode arr =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(posJson);
+            if (arr.isArray()) {
+                for (com.fasterxml.jackson.databind.JsonNode n : arr) {
+                    if (Math.abs(n.path("positionAmt").asDouble(0)) > 0.0001) {
+                        return last(ScalpResult.skipped("Position Binance déjà ouverte"));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.warnf("[Scalping] Impossible de vérifier la position: %s — on continue", e.getMessage());
+        }
+
+        return last(execute(sig, dir, price));
+    }
+
+    /**
+     * Force-executes a trade in the given direction at the current market price.
+     * Bypasses all signal/confidence/cooldown gates. For testing only.
+     * @param dir "LONG" or "SHORT"
+     */
+    public ScalpResult forceExecute(String dir) {
+        try {
+            String posJson = futuresService.getPositionRisk("BTCUSDT");
+            com.fasterxml.jackson.databind.JsonNode arr =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(posJson);
+            double currentPrice = 0;
+            if (arr.isArray() && arr.size() > 0) {
+                currentPrice = arr.get(0).path("markPrice").asDouble(0);
+            }
+            if (currentPrice <= 0) {
+                // fallback: fetch from premiumIndex
+                String idx = futuresService.getPremiumIndex("BTCUSDT");
+                currentPrice = new com.fasterxml.jackson.databind.ObjectMapper()
+                    .readTree(idx).path("markPrice").asDouble(0);
+            }
+            ScalpingSignal fake = new ScalpingSignal();
+            fake.direction    = dir.toUpperCase();
+            fake.confidence   = 100;
+            fake.currentPrice = currentPrice;
+            return last(execute(fake, dir.toUpperCase(), currentPrice));
+        } catch (Exception e) {
+            return last(ScalpResult.error("forceExecute failed: " + e.getMessage()));
+        }
+    }
+
+    // ── Trade execution ───────────────────────────────────────────────────────
+
+    private ScalpResult execute(ScalpingSignal sig, String dir, double entry) {
+        String symbol    = "BTCUSDT";
+        int    lev       = getLeverage();
+        double amt       = getAmountUsdt();
+        double tp        = getTpPct();
+        double sl        = getSlPct();
+
+        double rawQty    = (amt * lev) / entry;
+        double qty       = Math.max(0.001, Math.floor(rawQty * 1000) / 1000.0);
+        String qtyStr    = String.format(Locale.US, "%.3f", qty);
+
+        String entrySide = "LONG".equals(dir) ? "BUY"  : "SELL";
+        String closeSide = "LONG".equals(dir) ? "SELL" : "BUY";
+        boolean hedgeMode = futuresService.isHedgeMode();
+        String  posSide   = hedgeMode ? dir : null;
+
+        // TP / SL prices
+        double tpPrice = "LONG".equals(dir)
+            ? r1(entry * (1 + tp / 100)) : r1(entry * (1 - tp / 100));
+        double slPrice = "LONG".equals(dir)
+            ? r1(entry * (1 - sl / 100)) : r1(entry * (1 + sl / 100));
+
+        StringBuilder log = new StringBuilder();
+        log.append(String.format("[Scalping] %s @ %.2f conf=%d%% — ", dir, entry, sig.confidence));
+        try {
+            // 1. Cancel stale orders
+            try { futuresService.cancelAllOrders(symbol); }
+            catch (Exception e) { LOG.warnf("[Scalping] cancelAll: %s", e.getMessage()); }
+
+            // 2. Set leverage
+            futuresService.setLeverage(symbol, lev);
+
+            // 3. Market entry
+            String orderJson  = futuresService.placeMarketOrder(symbol, entrySide, qtyStr, posSide);
+            double filledPx   = parsePrice(orderJson, entry);
+            log.append(String.format("entrée %.2f. ", filledPx));
+            LOG.infof("[Scalping] Market order placé: %s", orderJson);
+
+            // Recalculate SL/TP on filled price
+            tpPrice = "LONG".equals(dir)
+                ? r1(filledPx * (1 + tp / 100)) : r1(filledPx * (1 - tp / 100));
+            slPrice = "LONG".equals(dir)
+                ? r1(filledPx * (1 - sl / 100)) : r1(filledPx * (1 + sl / 100));
+
+            // Wait for Binance to register the position before placing SL/TP
+            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+
+            // 4. SL
+            String slStatus;
+            try {
+                String slResp = futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", slPrice, qtyStr, posSide);
+                LOG.infof("[Scalping] SL order réponse: %s", slResp);
+                slStatus = "✅ SL " + String.format(Locale.US, "%.1f", slPrice);
+            } catch (Exception e) {
+                LOG.warnf("[Scalping] SL Binance échoué: %s", e.getMessage());
+                slStatus = "⚠ SL " + String.format(Locale.US, "%.1f", slPrice) + " | " + e.getMessage();
+            }
+
+            // 5. TP
+            String tpStatus;
+            try {
+                String tpResp = futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tpPrice, qtyStr, posSide);
+                LOG.infof("[Scalping] TP order réponse: %s", tpResp);
+                tpStatus = "✅ TP " + String.format(Locale.US, "%.1f", tpPrice);
+            } catch (Exception e) {
+                LOG.warnf("[Scalping] TP Binance échoué: %s", e.getMessage());
+                tpStatus = "⚠ TP " + String.format(Locale.US, "%.1f", tpPrice) + " | " + e.getMessage();
+            }
+
+            // 6. Activate internal tracking
+            activeDir        = dir;
+            activeEntryPrice = filledPx;
+            activeSlPrice    = slPrice;
+            activeTpPrice    = tpPrice;
+            activeQty        = qty;
+            activeConf       = sig.confidence;
+            activeOpenedAt   = Instant.now();
+
+            // Record open trade in history + DB
+            ScalpTrade trade = new ScalpTrade();
+            trade.direction  = dir;
+            trade.entryPrice = filledPx;
+            trade.tpPrice    = tpPrice;
+            trade.slPrice    = slPrice;
+            trade.confidence = sig.confidence;
+            trade.openedAt   = activeOpenedAt;
+            trade.status     = "OPEN";
+            trade.dbId       = persistTrade(trade);
+            tradeHistory.addLast(trade);
+            if (tradeHistory.size() > MAX_HISTORY) tradeHistory.pollFirst();
+
+            String summary = String.format("%s @ %.1f | %s | %s", dir, filledPx, slStatus, tpStatus);
+            LOG.infof("[Scalping] %s", summary);
+            telegramService.sendScalpingAlert(dir, filledPx, tpPrice, slPrice, sig.confidence);
+
+            return ScalpResult.placed(dir, sig.confidence, filledPx, tpPrice, slPrice, summary);
+
+        } catch (Exception e) {
+            LOG.errorf("[Scalping] ❌ Erreur trade: %s", e.getMessage());
+            return ScalpResult.error("Erreur trade: " + e.getMessage());
+        }
+    }
+
+    private ScalpResult closePosition(String reason, double price) {
+        String closeSide = "LONG".equals(activeDir) ? "SELL" : "BUY";
+        String qtyStr    = String.format(Locale.US, "%.3f", activeQty);
+        String posSide   = futuresService.isHedgeMode() ? activeDir : null;
+        try {
+            futuresService.closeWithMarket("BTCUSDT", closeSide, qtyStr, posSide);
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            // -2022: ReduceOnly rejected — position already closed by algo order
+            // -4003: Quantity <= 0 — no open position on Binance (e.g. after restart)
+            if (msg.contains("-2022") || msg.contains("-4003")) {
+                LOG.infof("[Scalping] Position déjà fermée côté Binance (%s @ %.2f) — code: %s",
+                    reason, price, msg.contains("-2022") ? "-2022" : "-4003");
+            } else {
+                LOG.errorf("[Scalping] ❌ Fermeture échouée: %s", msg);
+                return ScalpResult.error("Fermeture échouée: " + msg);
+            }
+        }
+        double pnl = "LONG".equals(activeDir)
+            ? (price - activeEntryPrice) * activeQty
+            : (activeEntryPrice - price) * activeQty;
+        String msg = String.format("[Scalping] %s %s @ %.2f (entrée %.2f, PnL=%.2f$)",
+            reason, activeDir, price, activeEntryPrice, pnl);
+        LOG.info(msg);
+        telegramService.sendCloseAlert(activeDir, reason + " scalping", price, pnl);
+        for (ScalpTrade t : tradeHistory) {
+            if ("OPEN".equals(t.status) && t.direction.equals(activeDir)) {
+                t.exitPrice = price;
+                t.pnl       = pnl;
+                t.closedAt  = Instant.now();
+                t.status    = reason;
+                updateTrade(t);
+                break;
+            }
+        }
+        lastTradeAt = Instant.now();
+        clearActive();
+        return ScalpResult.closed(reason, price, pnl);
+    }
+
+    @Transactional
+    Long persistTrade(ScalpTrade t) {
+        ScalpingTrade e = new ScalpingTrade();
+        e.direction  = t.direction;
+        e.entryPrice = t.entryPrice;
+        e.tpPrice    = t.tpPrice;
+        e.slPrice    = t.slPrice;
+        e.confidence = t.confidence;
+        e.openedAt   = t.openedAt;
+        e.status     = t.status;
+        e.persist();
+        return e.id;
+    }
+
+    @Transactional
+    void updateTrade(ScalpTrade t) {
+        if (t.dbId == null) return;
+        ScalpingTrade e = ScalpingTrade.findById(t.dbId);
+        if (e == null) return;
+        e.exitPrice = t.exitPrice;
+        e.pnl       = t.pnl;
+        e.closedAt  = t.closedAt;
+        e.status    = t.status;
+    }
+
+    private void clearActive() {
+        activeDir        = null;
+        activeEntryPrice = 0;
+        activeSlPrice    = 0;
+        activeTpPrice    = 0;
+        activeQty        = 0;
+        activeConf       = 0;
+        activeOpenedAt   = null;
+    }
+
+    public Map<String, Object> statusMap() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("enabled",       enabled.get());
+        m.put("configured",    futuresService.isConfigured());
+        m.put("minConfidence", getMinConfidence());
+        m.put("amountUsdt",    getAmountUsdt());
+        m.put("leverage",      getLeverage());
+        m.put("tpPct",         getTpPct());
+        m.put("slPct",         getSlPct());
+        m.put("activeDir",     activeDir);
+        m.put("activeEntry",   activeDir != null ? activeEntryPrice : null);
+        m.put("activeTp",      activeDir != null ? activeTpPrice    : null);
+        m.put("activeSl",      activeDir != null ? activeSlPrice    : null);
+        m.put("activeQty",     activeDir != null ? activeQty        : null);
+        m.put("activeConf",    activeDir != null ? activeConf       : null);
+        m.put("activeOpenedAt",activeDir != null && activeOpenedAt != null
+                               ? activeOpenedAt.toString() : null);
+        m.put("lastResult",    lastResult != null ? lastResult : Map.of());
+        if (lastTradeAt != null)
+            m.put("cooldownRemaining", Math.max(0,
+                COOLDOWN_MS - (Instant.now().toEpochMilli() - lastTradeAt.toEpochMilli())) / 1000);
+        // Wallet balances (non-blocking — empty map if API unavailable)
+        if (futuresService.isConfigured())
+            m.put("wallet", futuresService.getUsdtBalances());
+        return m;
+    }
+
+    /**
+     * Returns a diagnostic checklist of all conditions that block or allow a scalping trade.
+     * Each condition has: label, ok (boolean), detail (string).
+     */
+    public ScalpDiag diagnose() {
+        ScalpDiag d = new ScalpDiag();
+        d.enabled       = enabled.get();
+        d.configured    = futuresService.isConfigured();
+        d.minConfidence = getMinConfidence();
+
+        // ── Cooldown ──────────────────────────────────────────────────────────
+        if (lastTradeAt != null) {
+            long elapsed = Instant.now().toEpochMilli() - lastTradeAt.toEpochMilli();
+            d.cooldownOk         = elapsed >= COOLDOWN_MS;
+            d.cooldownRemainMin  = (int) Math.max(0, (COOLDOWN_MS - elapsed) / 60_000 + 1);
+        } else {
+            d.cooldownOk = true;
+        }
+
+        // ── Active position ───────────────────────────────────────────────────
+        d.hasActivePosition = activeDir != null;
+        d.activeDir         = activeDir;
+
+        // ── Signal ────────────────────────────────────────────────────────────
+        try {
+            ScalpingSignal sig = scalpingService.getSignal();
+            if (sig.error != null) {
+                d.signalError = sig.error;
+            } else {
+                d.signalDirection  = sig.direction;
+                d.signalConfidence = sig.confidence;
+                d.signalPrice      = sig.currentPrice;
+
+                d.directionOk   = "LONG".equals(sig.direction) || "SHORT".equals(sig.direction);
+                d.confidenceOk  = d.directionOk && sig.confidence >= getMinConfidence();
+
+                // Individual indicator checks
+                d.rsiOk       = sig.rsi7 < 35 || sig.rsi7 > 65;
+                d.rsiValue    = sig.rsi7;
+                d.rsiDetail   = sig.rsi7 < 30 ? "Oversold (" + String.format(Locale.US,"%.1f", sig.rsi7) + ")"
+                              : sig.rsi7 > 70  ? "Overbought (" + String.format(Locale.US,"%.1f", sig.rsi7) + ")"
+                              : sig.rsi7 < 35  ? "Bas (" + String.format(Locale.US,"%.1f", sig.rsi7) + ")"
+                              : sig.rsi7 > 65  ? "Haut (" + String.format(Locale.US,"%.1f", sig.rsi7) + ")"
+                              : "Neutre (" + String.format(Locale.US,"%.1f", sig.rsi7) + ")";
+
+                boolean emaAligned = d.directionOk &&
+                    (("LONG".equals(sig.direction)  && sig.currentPrice > sig.ema5 && sig.ema5 > sig.ema13) ||
+                     ("SHORT".equals(sig.direction) && sig.currentPrice < sig.ema5 && sig.ema5 < sig.ema13));
+                boolean emaPartial = d.directionOk &&
+                    (("LONG".equals(sig.direction)  && sig.currentPrice > sig.ema13) ||
+                     ("SHORT".equals(sig.direction) && sig.currentPrice < sig.ema13));
+                d.emaOk     = emaAligned || emaPartial;
+                d.emaDetail = emaAligned ? "Cross aligné (×10 pts)"
+                            : emaPartial ? "Partiel (+10 pts)"
+                            : "Opposé au signal";
+
+                d.macdOk     = (sig.macdHistogram > 0 && "LONG".equals(sig.direction)) ||
+                               (sig.macdHistogram < 0 && "SHORT".equals(sig.direction));
+                d.macdDetail = String.format(Locale.US, "Hist %+.2f", sig.macdHistogram);
+
+                d.volDeltaOk     = ("LONG".equals(sig.direction)  && sig.volumeDeltaPct > 52) ||
+                                   ("SHORT".equals(sig.direction) && sig.volumeDeltaPct < 48);
+                d.volDeltaDetail = String.format(Locale.US, "%.1f%% (%s)", sig.volumeDeltaPct, sig.volumeDeltaTrend);
+
+                d.stochOk     = ("LONG".equals(sig.direction)  && sig.stochK < 20) ||
+                                ("SHORT".equals(sig.direction) && sig.stochK > 80);
+                d.stochDetail = String.format(Locale.US, "K=%.1f D=%.1f", sig.stochK, sig.stochD);
+
+                d.bbOk     = !"SQUEEZE".equals(sig.bbState);
+                d.bbDetail = sig.bbState + " (" + String.format(Locale.US,"%.2f", sig.bbWidth) + "%)";
+
+                d.scoreDetail = String.format("RSI=%+d EMA=%+d MACD=%+d Vol=%+d → conf=%d/100",
+                    sig.rsiScore, sig.emaScore, sig.macdScore, sig.volScore, sig.confidence);
+            }
+        } catch (Exception e) {
+            d.signalError = e.getMessage();
+        }
+
+        // ── Binance open position ─────────────────────────────────────────────
+        if (futuresService.isConfigured()) {
+            try {
+                String posJson = futuresService.getPositionRisk("BTCUSDT");
+                com.fasterxml.jackson.databind.JsonNode arr =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(posJson);
+                d.binancePosOk = true;
+                if (arr.isArray()) {
+                    for (com.fasterxml.jackson.databind.JsonNode n : arr) {
+                        if (Math.abs(n.path("positionAmt").asDouble(0)) > 0.0001) {
+                            d.binancePosOk = false;
+                            d.binancePosDetail = "Position Binance ouverte: " + n.path("positionAmt").asText();
+                            break;
+                        }
+                    }
+                }
+                if (d.binancePosOk) d.binancePosDetail = "Aucune position ouverte";
+            } catch (Exception e) {
+                d.binancePosOk     = true; // non-blocking if API check fails
+                d.binancePosDetail = "Vérification impossible: " + e.getMessage();
+            }
+        } else {
+            d.binancePosOk     = false;
+            d.binancePosDetail = "API non configurée";
+        }
+
+        // ── Would trade? ──────────────────────────────────────────────────────
+        d.wouldTrade = d.enabled && d.configured && !d.hasActivePosition
+                && d.cooldownOk && d.directionOk && d.confidenceOk && d.binancePosOk;
+
+        if      (!d.enabled)            d.blockingReason = "Auto-scalping désactivé";
+        else if (!d.configured)         d.blockingReason = "Clé API Binance non configurée";
+        else if (d.hasActivePosition)   d.blockingReason = "Position interne active (" + d.activeDir + ") — attendre SL/TP";
+        else if (!d.cooldownOk)         d.blockingReason = "Cooldown " + d.cooldownRemainMin + " min restante(s) après dernier trade";
+        else if (d.signalError != null) d.blockingReason = "Erreur signal: " + d.signalError;
+        else if (!d.directionOk)        d.blockingReason = "Signal WAIT — pas de direction claire (conf=" + d.signalConfidence + "%)";
+        else if (!d.confidenceOk)       d.blockingReason = "Confiance " + d.signalConfidence + "% < seuil " + d.minConfidence + "%";
+        else if (!d.binancePosOk)       d.blockingReason = d.binancePosDetail;
+        else                            d.blockingReason = null;
+
+        return d;
+    }
+
+    public static class ScalpDiag {
+        // Gate checks
+        public boolean enabled;
+        public boolean configured;
+        public boolean cooldownOk;
+        public int     cooldownRemainMin;
+        public boolean hasActivePosition;
+        public String  activeDir;
+        public boolean binancePosOk;
+        public String  binancePosDetail;
+        public boolean directionOk;
+        public boolean confidenceOk;
+        public int     minConfidence;
+        public int     signalConfidence;
+        public String  signalDirection;
+        public double  signalPrice;
+        public String  signalError;
+        // Indicator checks
+        public boolean rsiOk;
+        public double  rsiValue;
+        public String  rsiDetail;
+        public boolean emaOk;
+        public String  emaDetail;
+        public boolean macdOk;
+        public String  macdDetail;
+        public boolean volDeltaOk;
+        public String  volDeltaDetail;
+        public boolean stochOk;
+        public String  stochDetail;
+        public boolean bbOk;
+        public String  bbDetail;
+        public String  scoreDetail;
+        // Summary
+        public boolean wouldTrade;
+        public String  blockingReason;
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private ScalpResult last(ScalpResult r) { lastResult = r; return r; }
+
+    private double parsePrice(String json, double fallback) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode n =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+            double v = n.path("avgPrice").asDouble(0);
+            return v > 0 ? v : fallback;
+        } catch (Exception e) { return fallback; }
+    }
+
+    private double r1(double v) { return Math.round(v * 10.0) / 10.0; }
+
+    // ── Result DTO ────────────────────────────────────────────────────────────
+
+    public static class ScalpResult {
+        public String status;       // "placed" | "closed" | "skipped" | "error"
+        public String direction;
+        public int    confidence;
+        public double entryPrice;
+        public double tpPrice;
+        public double slPrice;
+        public double pnl;
+        public String message;
+
+        static ScalpResult placed(String dir, int conf, double entry, double tp, double sl, String msg) {
+            ScalpResult r = new ScalpResult();
+            r.status = "placed"; r.direction = dir; r.confidence = conf;
+            r.entryPrice = entry; r.tpPrice = tp; r.slPrice = sl; r.message = msg; return r;
+        }
+        static ScalpResult closed(String reason, double price, double pnl) {
+            ScalpResult r = new ScalpResult();
+            r.status = "closed"; r.entryPrice = price; r.pnl = pnl; r.message = reason; return r;
+        }
+        static ScalpResult skipped(String msg) {
+            ScalpResult r = new ScalpResult(); r.status = "skipped"; r.message = msg; return r;
+        }
+        static ScalpResult error(String msg) {
+            ScalpResult r = new ScalpResult(); r.status = "error"; r.message = msg; return r;
+        }
+    }
+
+    // ── Trade history DTO ─────────────────────────────────────────────────────
+
+    public static class ScalpTrade {
+        public Long    dbId;        // DB primary key (null if not persisted)
+        public String  direction;
+        public double  entryPrice;
+        public double  exitPrice;
+        public double  tpPrice;
+        public double  slPrice;
+        public int     confidence;
+        public double  pnl;
+        public String  status;   // "OPEN" | "TP" | "SL" | "MANUAL"
+        public Instant openedAt;
+        public Instant closedAt;
+    }
+}

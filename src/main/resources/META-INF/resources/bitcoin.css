@@ -5,6 +5,8 @@
   --bg:       #0d1117;
   --surface:  #161b22;
   --surface2: #1c2128;
+  --card:     #161b22;
+  --bg2:      #1c2128;
   --border:   #30363d;
   --text:     #e6edf3;
   --muted:    #8b949e;
@@ -12,6 +14,9 @@
   --sell:     #f85149;
   --hold:     #d29922;
   --blue:     #58a6ff;
+  --accent:   #f0b429;
+  --green:    #3fb950;
+  --red:      #f85149;
   --radius:   10px;
   --long-glow: 0 0 18px #3fb95044;
   --short-glow:0 0 18px #f8514944;

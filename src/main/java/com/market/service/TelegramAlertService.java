@@ -140,6 +140,21 @@ public class TelegramAlertService {
         send(text);
     }
 
+    /**
+     * Sends a scalping trade open notification (compact format for 1m trades).
+     */
+    public void sendScalpingAlert(String dir, double price, double tp, double sl, int conf) {
+        if (!isEnabled()) return;
+        String emoji = "LONG".equals(dir) ? "⚡🟢 SCALP LONG" : "⚡🔴 SCALP SHORT";
+        String text = String.format(java.util.Locale.US,
+            "%s *BTC/USDT [1m]*\n" +
+            "Entrée : $%,.2f | Conf : %d%%\n" +
+            "TP : $%,.2f · SL : $%,.2f",
+            emoji, price, conf, tp, sl
+        );
+        send(text);
+    }
+
     // ── Private helpers ───────────────────────────────────────────────────────
 
     private String buildMessage(BitcoinSignal s) {

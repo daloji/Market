@@ -3,6 +3,8 @@ package com.market.resource;
 import com.market.client.BinanceClient;
 import com.market.model.BitcoinSignal;
 import com.market.model.CandleDTO;
+import com.market.model.ScalpingSignal;
+import com.market.service.ScalpingAnalysisService;
 import com.market.service.CryptoAnalysisService;
 import com.market.service.TelegramAlertService;
 import jakarta.inject.Inject;
@@ -19,8 +21,9 @@ import java.util.stream.Collectors;
 @Produces(MediaType.APPLICATION_JSON)
 public class CryptoResource {
 
-    @Inject CryptoAnalysisService cryptoService;
-    @Inject TelegramAlertService  telegramAlertService;
+    @Inject CryptoAnalysisService    cryptoService;
+    @Inject ScalpingAnalysisService  scalpingService;
+    @Inject TelegramAlertService     telegramAlertService;
 
     @Inject @RestClient BinanceClient binanceClient;
 
@@ -29,6 +32,13 @@ public class CryptoResource {
     @Path("/btc/signal")
     public BitcoinSignal getBtcSignal() {
         return cryptoService.getSignal();
+    }
+
+    /** Scalping signal based on 1m candles (RSI7, EMA5/13, MACD fast, volume delta). */
+    @GET
+    @Path("/btc/scalping")
+    public ScalpingSignal getScalpingSignal() {
+        return scalpingService.getSignal();
     }
 
     /** Raw candles for a given interval (for switching chart timeframe). */

@@ -7,6 +7,7 @@ import org.jboss.logging.Logger;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.util.Locale;
+import java.util.Map;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -143,42 +144,75 @@ public class BinanceFuturesService {
 
     /**
      * Places a STOP_MARKET (SL) or TAKE_PROFIT_MARKET (TP) conditional order.
-     * One-Way mode: uses reduceOnly=true with explicit quantity.
-     * Hedge Mode: uses positionSide=LONG/SHORT instead (reduceOnly rejected with -4061).
+     * Uses the Algo Order API (POST /fapi/v1/algoOrder) with algoType=CONDITIONAL,
+     * as required by Binance since STOP_MARKET / TAKE_PROFIT_MARKET are no longer
+     * accepted on /fapi/v1/order (error -4120).
+     * One-Way mode: uses closePosition=true (Binance recommended — closes full position, no quantity needed).
+     * Hedge Mode: uses positionSide=LONG/SHORT + explicit quantity (closePosition not available).
      * Uses workingType=MARK_PRICE to avoid wick-triggered stops.
      *
      * @param symbol       e.g. "BTCUSDT"
      * @param side         "SELL" (to close a LONG), "BUY" (to close a SHORT)
      * @param type         "STOP_MARKET" or "TAKE_PROFIT_MARKET"
      * @param stopPrice    trigger price (1 decimal place for BTCUSDT)
-     * @param quantity     BTC quantity to close (e.g. "0.010")
-     * @param positionSide "LONG" or "SHORT" for Hedge Mode accounts; null for One-Way mode
+     * @param quantity     BTC quantity — only used in Hedge Mode
+     * @param positionSide "LONG" or "SHORT" for Hedge Mode; null for One-Way mode
      */
     public String placeCloseOrder(String symbol, String side, String type,
                                   double stopPrice, String quantity,
                                   String positionSide) throws Exception {
-        String params = "symbol=" + symbol
-                + "&side=" + side
-                + "&type=" + type
-                + "&stopPrice=" + String.format(Locale.US, "%.1f", stopPrice)
-                + "&quantity=" + quantity;
-        if (positionSide != null && !positionSide.isBlank()) {
-            params += "&positionSide=" + positionSide;
-        } else {
-            params += "&reduceOnly=true";
-        }
-        params += "&workingType=MARK_PRICE"
-                + "&timestamp=" + ts();
-        return post("/fapi/v1/order", params + "&signature=" + sign(params));
+        String params = buildCloseOrderBody(symbol, side, type, stopPrice, quantity, positionSide);
+        params += "&timestamp=" + ts();
+        return post("/fapi/v1/algoOrder", params + "&signature=" + sign(params));
     }
 
     /**
-     * Cancels all open orders for a symbol (DELETE /fapi/v1/allOpenOrders).
+     * Builds the request body for a conditional algo (SL/TP) order, without timestamp/signature.
+     * Package-private for unit testing.
+     */
+    String buildCloseOrderBody(String symbol, String side, String type, double stopPrice,
+                               String quantity, String positionSide) {
+        String params = "symbol=" + symbol
+                + "&side=" + side
+                + "&algoType=CONDITIONAL"
+                + "&type=" + type
+                + "&triggerPrice=" + String.format(Locale.US, "%.1f", stopPrice);
+        if (positionSide != null && !positionSide.isBlank()) {
+            // Hedge Mode: quantity + positionSide required
+            params += "&quantity=" + quantity
+                    + "&positionSide=" + positionSide;
+        } else {
+            // One-Way mode: closePosition=true closes the full position automatically
+            params += "&closePosition=true";
+        }
+        params += "&workingType=MARK_PRICE";
+        return params;
+    }
+
+    /**
+     * Cancels all open regular orders for a symbol (DELETE /fapi/v1/allOpenOrders).
+     * Also cancels all open algo (SL/TP) orders via DELETE /fapi/v1/algoOpenOrders.
      * Called before opening a new position to clean up stale orders.
      */
     public String cancelAllOrders(String symbol) throws Exception {
         String params = "symbol=" + symbol + "&timestamp=" + ts();
-        return delete("/fapi/v1/allOpenOrders", params + "&signature=" + sign(params));
+        String result = delete("/fapi/v1/allOpenOrders", params + "&signature=" + sign(params));
+        try {
+            cancelAllAlgoOrders(symbol);
+        } catch (Exception e) {
+            LOG.warnf("[Futures] cancelAllAlgoOrders skipped: %s", e.getMessage());
+        }
+        return result;
+    }
+
+    /**
+     * Cancels all open algo (conditional SL/TP) orders for a symbol.
+     * Uses DELETE /fapi/v1/algoOpenOrders — a single bulk-cancel endpoint.
+     */
+    public void cancelAllAlgoOrders(String symbol) throws Exception {
+        String params = "symbol=" + symbol + "&timestamp=" + ts();
+        delete("/fapi/v1/algoOpenOrders", params + "&signature=" + sign(params));
+        LOG.debugf("[Futures] All algo orders cancelled for %s", symbol);
     }
 
     /**
@@ -188,6 +222,15 @@ public class BinanceFuturesService {
     public String getOpenOrders(String symbol) throws Exception {
         String params = "symbol=" + symbol + "&timestamp=" + ts();
         return get("/fapi/v1/openOrders", params + "&signature=" + sign(params));
+    }
+
+    /**
+     * Returns all open algo (conditional SL/TP) orders for a symbol.
+     * GET /fapi/v1/algoOpenOrders
+     */
+    public String getOpenAlgoOrders(String symbol) throws Exception {
+        String params = "symbol=" + symbol + "&timestamp=" + ts();
+        return get("/fapi/v1/openAlgoOrders", params + "&signature=" + sign(params));
     }
 
     /**
@@ -225,6 +268,32 @@ public class BinanceFuturesService {
             }
         }
         return -1;
+    }
+
+    /**
+     * Returns both wallet balance (total equity) and available balance for USDT.
+     * Map keys: "walletBalance", "availableBalance", "unrealizedProfit"
+     */
+    public Map<String, Double> getUsdtBalances() {
+        Map<String, Double> result = new java.util.LinkedHashMap<>();
+        try {
+            String json = getAccount();
+            com.fasterxml.jackson.databind.JsonNode root = new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+            com.fasterxml.jackson.databind.JsonNode assets = root.path("assets");
+            if (assets.isArray()) {
+                for (com.fasterxml.jackson.databind.JsonNode asset : assets) {
+                    if ("USDT".equals(asset.path("asset").asText())) {
+                        result.put("walletBalance",    asset.path("walletBalance").asDouble(0));
+                        result.put("availableBalance", asset.path("availableBalance").asDouble(0));
+                        result.put("unrealizedProfit", asset.path("unrealizedProfit").asDouble(0));
+                        return result;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            LOG.warnf("getUsdtBalances failed: %s", e.getMessage());
+        }
+        return result;
     }
 
     // ── Public market data (no auth, always live fapi.binance.com) ────────────
