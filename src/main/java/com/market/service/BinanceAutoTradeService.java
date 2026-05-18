@@ -746,9 +746,10 @@ public class BinanceAutoTradeService {
     private AutoTradeResult closeRemainingInternal(String reason, double price) {
         String closeSide = "LONG".equals(activeDir) ? "SELL" : "BUY";
         String qtyStr    = String.format(Locale.US, "%.3f", activeQty);
+        String posSide   = futuresService.isHedgeMode() ? activeDir : null;
 
         try {
-            futuresService.closeWithMarket("BTCUSDT", closeSide, qtyStr);
+            futuresService.closeWithMarket("BTCUSDT", closeSide, qtyStr, posSide);
             String msg = reason + " @ " + String.format(Locale.US, "%.1f", price)
                     + " | SL=" + String.format(Locale.US, "%.1f", activeSlPrice)
                     + " TP1=" + String.format(Locale.US, "%.1f", activeTp1Price)
@@ -860,7 +861,12 @@ public class BinanceAutoTradeService {
         String entrySide = "LONG".equals(dir) ? "BUY"  : "SELL";
         String closeSide = "LONG".equals(dir) ? "SELL" : "BUY";
 
+        // Hedge Mode: positionSide=LONG/SHORT required instead of reduceOnly=true
+        boolean hedgeMode  = futuresService.isHedgeMode();
+        String  posSide    = hedgeMode ? dir : null;   // "LONG", "SHORT", or null (one-way)
+
         StringBuilder log = new StringBuilder();
+        if (hedgeMode) log.append("Hedge Mode. ");
         try {
             // 0. Check available balance — refuse trade if insufficient margin
             try {
@@ -889,7 +895,7 @@ public class BinanceAutoTradeService {
             log.append("Levier ×").append(lev_).append(" OK. ");
 
             // 3. Market entry order
-            String orderJson   = futuresService.placeMarketOrder(symbol, entrySide, qty);
+            String orderJson   = futuresService.placeMarketOrder(symbol, entrySide, qty, posSide);
             double filledPrice = parseAvgPrice(orderJson, entry);
             double filledQty   = parseExecutedQty(orderJson, Double.parseDouble(qty));
             log.append(dir).append(" ").append(qty).append(" BTC @ ")
@@ -897,7 +903,7 @@ public class BinanceAutoTradeService {
 
             // 4. Stop Loss sur Binance (best-effort, en cas d'erreur: suivi interne prend le relais)
             try {
-                futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", sl, qty);
+                futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", sl, qty, posSide);
                 log.append("SL Binance @ ").append(String.format(Locale.US, "%.1f", sl)).append(". ");
             } catch (Exception e) {
                 LOG.warnf("[AutoTrade] SL Binance échoué (%s) — suivi interne activé", e.getMessage());
@@ -907,7 +913,7 @@ public class BinanceAutoTradeService {
             // 5. TP1 / TP2 / TP3 sur Binance (partial quantities, best-effort)
             int tpPlaced = 0;
             try {
-                futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp1, qty1);
+                futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp1, qty1, posSide);
                 log.append("TP1 @ ").append(String.format(Locale.US, "%.1f", tp1))
                    .append(" (").append(qty1).append(" BTC). ");
                 tpPlaced++;
@@ -916,7 +922,7 @@ public class BinanceAutoTradeService {
                 log.append("TP1 interne @ ").append(String.format(Locale.US, "%.1f", tp1)).append(". ");
             }
             try {
-                futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp2, qty2);
+                futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp2, qty2, posSide);
                 log.append("TP2 @ ").append(String.format(Locale.US, "%.1f", tp2))
                    .append(" (").append(qty2).append(" BTC). ");
                 tpPlaced++;
@@ -925,7 +931,7 @@ public class BinanceAutoTradeService {
                 log.append("TP2 interne @ ").append(String.format(Locale.US, "%.1f", tp2)).append(". ");
             }
             try {
-                futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp3, qty3);
+                futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp3, qty3, posSide);
                 log.append("TP3 @ ").append(String.format(Locale.US, "%.1f", tp3))
                    .append(" (").append(qty3).append(" BTC). ");
                 tpPlaced++;
@@ -1024,7 +1030,8 @@ public class BinanceAutoTradeService {
 
         String side = posAmt > 0 ? "SELL" : "BUY";
         String qty  = String.format(Locale.US, "%.3f", Math.abs(posAmt));
-        String orderJson = futuresService.closeWithMarket(symbol, side, qty);
+        String posSide = futuresService.isHedgeMode() ? (posAmt > 0 ? "LONG" : "SHORT") : null;
+        String orderJson = futuresService.closeWithMarket(symbol, side, qty, posSide);
         double filledPrice = parseAvgPrice(orderJson, 0);
 
         // Close DB trade
@@ -1093,7 +1100,8 @@ public class BinanceAutoTradeService {
                     String side = posAmt > 0 ? "SELL" : "BUY";
                     String dir  = posAmt > 0 ? "LONG" : "SHORT";
                     String qty  = String.format(Locale.US, "%.3f", Math.abs(posAmt));
-                    String orderJson = futuresService.closeWithMarket("BTCUSDT", side, qty);
+                    String posSide = futuresService.isHedgeMode() ? dir : null;
+                    String orderJson = futuresService.closeWithMarket("BTCUSDT", side, qty, posSide);
                     double price = parseAvgPrice(orderJson, 0);
 
                     // Close DB trade

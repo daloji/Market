@@ -46,12 +46,41 @@ public class BinanceFuturesService {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
+    /** Cached hedge mode flag: true = Hedge Mode (dual), false = One-Way, null = not yet detected. */
+    private volatile Boolean hedgeModeCache = null;
+
     public boolean isConfigured() {
         return !apiKey.isBlank() && !secret.isBlank();
     }
 
     public boolean isTestnet() {
         return testnet;
+    }
+
+    /**
+     * Returns true if the account uses Hedge Mode (dual position side).
+     * In Hedge Mode, orders must use positionSide=LONG/SHORT instead of reduceOnly=true.
+     * Result is cached after first call (resets to null on reconnect via {@link #resetHedgeModeCache()}).
+     */
+    public boolean isHedgeMode() {
+        if (hedgeModeCache != null) return hedgeModeCache;
+        try {
+            String params = "timestamp=" + ts();
+            String json   = get("/fapi/v1/positionSide/dual", params + "&signature=" + sign(params));
+            com.fasterxml.jackson.databind.JsonNode root =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+            hedgeModeCache = root.path("dualSidePosition").asBoolean(false);
+            LOG.infof("[Futures] Mode position détecté: %s", hedgeModeCache ? "Hedge Mode" : "One-Way");
+        } catch (Exception e) {
+            LOG.warnf("[Futures] Détection mode position échouée (%s) — One-Way supposé", e.getMessage());
+            hedgeModeCache = false;
+        }
+        return hedgeModeCache;
+    }
+
+    /** Clears the cached hedge mode so it is re-detected on next call. */
+    public void resetHedgeModeCache() {
+        hedgeModeCache = null;
     }
 
     private String baseUrl() {
@@ -72,55 +101,73 @@ public class BinanceFuturesService {
 
     /**
      * Places a MARKET order to open a position (POST /fapi/v1/order).
-     * @param symbol   e.g. "BTCUSDT"
-     * @param side     "BUY" (LONG entry) or "SELL" (SHORT entry)
-     * @param quantity BTC amount formatted to 3 decimal places (e.g. "0.010")
+     * @param symbol       e.g. "BTCUSDT"
+     * @param side         "BUY" (LONG entry) or "SELL" (SHORT entry)
+     * @param quantity     BTC amount formatted to 3 decimal places (e.g. "0.010")
+     * @param positionSide "LONG" or "SHORT" for Hedge Mode accounts; null for One-Way mode
      */
-    public String placeMarketOrder(String symbol, String side, String quantity) throws Exception {
+    public String placeMarketOrder(String symbol, String side, String quantity,
+                                   String positionSide) throws Exception {
         String params = "symbol=" + symbol
                 + "&side=" + side
                 + "&type=MARKET"
-                + "&quantity=" + quantity
-                + "&timestamp=" + ts();
+                + "&quantity=" + quantity;
+        if (positionSide != null && !positionSide.isBlank()) {
+            params += "&positionSide=" + positionSide;
+        }
+        params += "&timestamp=" + ts();
         return post("/fapi/v1/order", params + "&signature=" + sign(params));
     }
 
     /**
-     * Closes an existing position with a MARKET order using reduceOnly=true.
-     * Unlike placeMarketOrder, this guarantees the order only reduces (never flips) the position.
-     * Must be used for all close operations (manual close, SL/TP hit).
+     * Closes an existing position with a MARKET order.
+     * One-Way mode: uses reduceOnly=true to guarantee only a reduce (never a flip).
+     * Hedge Mode: uses positionSide=LONG/SHORT instead (reduceOnly not allowed).
+     *
+     * @param positionSide "LONG" or "SHORT" for Hedge Mode accounts; null for One-Way mode
      */
-    public String closeWithMarket(String symbol, String side, String quantity) throws Exception {
+    public String closeWithMarket(String symbol, String side, String quantity,
+                                  String positionSide) throws Exception {
         String params = "symbol=" + symbol
                 + "&side=" + side
                 + "&type=MARKET"
-                + "&quantity=" + quantity
-                + "&reduceOnly=true"
-                + "&timestamp=" + ts();
+                + "&quantity=" + quantity;
+        if (positionSide != null && !positionSide.isBlank()) {
+            params += "&positionSide=" + positionSide;
+        } else {
+            params += "&reduceOnly=true";
+        }
+        params += "&timestamp=" + ts();
         return post("/fapi/v1/order", params + "&signature=" + sign(params));
     }
 
     /**
      * Places a STOP_MARKET (SL) or TAKE_PROFIT_MARKET (TP) conditional order.
-     * Uses reduceOnly=true with explicit quantity (compatible with all account types).
-     * closePosition=true triggered error -4120 on some accounts.
+     * One-Way mode: uses reduceOnly=true with explicit quantity.
+     * Hedge Mode: uses positionSide=LONG/SHORT instead (reduceOnly rejected with -4061).
      * Uses workingType=MARK_PRICE to avoid wick-triggered stops.
      *
-     * @param symbol    e.g. "BTCUSDT"
-     * @param side      "SELL" (to close a LONG), "BUY" (to close a SHORT)
-     * @param type      "STOP_MARKET" or "TAKE_PROFIT_MARKET"
-     * @param stopPrice trigger price (1 decimal place for BTCUSDT)
-     * @param quantity  BTC quantity to close (e.g. "0.010")
+     * @param symbol       e.g. "BTCUSDT"
+     * @param side         "SELL" (to close a LONG), "BUY" (to close a SHORT)
+     * @param type         "STOP_MARKET" or "TAKE_PROFIT_MARKET"
+     * @param stopPrice    trigger price (1 decimal place for BTCUSDT)
+     * @param quantity     BTC quantity to close (e.g. "0.010")
+     * @param positionSide "LONG" or "SHORT" for Hedge Mode accounts; null for One-Way mode
      */
     public String placeCloseOrder(String symbol, String side, String type,
-                                  double stopPrice, String quantity) throws Exception {
+                                  double stopPrice, String quantity,
+                                  String positionSide) throws Exception {
         String params = "symbol=" + symbol
                 + "&side=" + side
                 + "&type=" + type
                 + "&stopPrice=" + String.format(Locale.US, "%.1f", stopPrice)
-                + "&quantity=" + quantity
-                + "&reduceOnly=true"
-                + "&workingType=MARK_PRICE"
+                + "&quantity=" + quantity;
+        if (positionSide != null && !positionSide.isBlank()) {
+            params += "&positionSide=" + positionSide;
+        } else {
+            params += "&reduceOnly=true";
+        }
+        params += "&workingType=MARK_PRICE"
                 + "&timestamp=" + ts();
         return post("/fapi/v1/order", params + "&signature=" + sign(params));
     }

@@ -77,12 +77,13 @@ class BinanceAutoTradeServiceTest {
 
         // Default mocks used by most tests
         when(futuresService.isConfigured()).thenReturn(true);
+        when(futuresService.isHedgeMode()).thenReturn(false);
         when(analysisService.getSignal()).thenReturn(waitSignal());
         when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
         when(futuresService.setLeverage(any(), anyInt())).thenReturn("{}");
-        when(futuresService.placeMarketOrder(any(), any(), any())).thenReturn("{\"avgPrice\":\"100000\",\"executedQty\":\"0.001\"}");
-        when(futuresService.closeWithMarket(any(), any(), any())).thenReturn("{\"avgPrice\":\"100000\"}");
-        when(futuresService.placeCloseOrder(any(), any(), any(), anyDouble(), any())).thenReturn("{}");
+        when(futuresService.placeMarketOrder(any(), any(), any(), any())).thenReturn("{\"avgPrice\":\"100000\",\"executedQty\":\"0.001\"}");
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{\"avgPrice\":\"100000\"}");
+        when(futuresService.placeCloseOrder(any(), any(), any(), anyDouble(), any(), any())).thenReturn("{}");
         when(futuresService.cancelAllOrders(any())).thenReturn("{}");
         when(futuresService.getOpenOrders(any())).thenReturn("[{\"type\":\"STOP_MARKET\"},{\"type\":\"TAKE_PROFIT_MARKET\"}]");
         when(futuresService.getAvailableBalance()).thenReturn(500.0); // sufficient balance by default
