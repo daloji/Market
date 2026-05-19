@@ -1,3 +1,4 @@
+[![codecov](https://codecov.io/github/daloji/Market/graph/badge.svg?token=C6J58BY697)](https://codecov.io/github/daloji/Market)
 # 📈 Market — Analyseur Boursier Intelligent
 
 Application **Quarkus 3.8** de surveillance boursière qui récupère les données OHLCV quotidiennes, calcule des indicateurs techniques (RSI, SMA, MACD, Bollinger Bands), effectue une analyse fondamentale (P/E, PEG, P/B, ROE…) et expose des recommandations BUY/HOLD/SELL via une API REST et un dashboard web en thème sombre.
