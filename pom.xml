@@ -133,8 +133,6 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.2.5</version>
         <configuration>
-          <!-- @{argLine} passes the JaCoCo agent to the test JVM (late-binding, set by prepare-agent) -->
-          <argLine>@{argLine}</argLine>
           <systemPropertyVariables>
             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
           </systemPropertyVariables>
@@ -145,12 +143,10 @@
         <artifactId>jacoco-maven-plugin</artifactId>
         <version>0.8.12</version>
         <executions>
-          <!-- Attaches JaCoCo agent to the test JVM via argLine property -->
-          <execution>
-            <id>jacoco-prepare</id>
-            <goals><goal>prepare-agent</goal></goals>
-          </execution>
           <!-- Report uses quarkus-jacoco exec (accurate CDI/Panache coverage) -->
+          <!-- NOTE: jacoco-prepare is intentionally absent — quarkus-jacoco handles
+               instrumentation via its own agent. Using both simultaneously causes
+               "Cannot process instrumented class" double-instrumentation errors. -->
           <execution>
             <id>jacoco-report</id>
             <phase>test</phase>
