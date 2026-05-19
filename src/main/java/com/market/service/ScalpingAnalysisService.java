@@ -174,6 +174,13 @@ public class ScalpingAnalysisService {
             s.stochK = r2(stoch[0]);
             s.stochD = r2(stoch[1]);
 
+            // ADX(14) — trend strength / regime detection
+            double[] adxResult = ta.calculateADX(highs, lows, closes, 14);
+            s.adx      = r2(adxResult[0]);
+            s.plusDI   = r2(adxResult[1]);
+            s.minusDI  = r2(adxResult[2]);
+            s.marketRegime = s.adx > 25 ? "TREND" : s.adx < 20 ? "RANGE" : "NEUTRAL";
+
             // Volume Delta — buying pressure over last 20 candles
             double totalVol = 0, totalBuy = 0;
             for (int i = n - 20; i < n; i++) {
@@ -193,77 +200,95 @@ public class ScalpingAnalysisService {
             int shortScore = 0;
             StringBuilder reasoning = new StringBuilder();
 
-            // RSI(7): < 30 = oversold (+25 LONG), > 70 = overbought (+25 SHORT)
-            // Partial scoring between 30–50 and 50–70
+            // Regime multipliers from ADX(14):
+            //   TREND  (ADX>25) → EMA/MACD ×1.5, RSI/Stoch/RSIdyn ×0.7
+            //   RANGE  (ADX<20) → RSI/Stoch/RSIdyn ×1.5, EMA/MACD ×0.7
+            //   NEUTRAL (20–25) → all ×1.0
+            double oscMult   = "TREND".equals(s.marketRegime) ? 0.7 : "RANGE".equals(s.marketRegime) ? 1.5 : 1.0;
+            double trendMult = "TREND".equals(s.marketRegime) ? 1.5 : "RANGE".equals(s.marketRegime) ? 0.7 : 1.0;
+            reasoning.append(String.format("ADX=%.1f[%s](osc×%.1f,trend×%.1f). ", s.adx, s.marketRegime, oscMult, trendMult));
+
+            // RSI(7): < 30 = oversold (+25 LONG), > 70 = overbought (+25 SHORT) — scaled by oscMult
             if (s.rsi7 < 30) {
-                s.rsiScore = 25; longScore += 25;
-                reasoning.append("RSI(7) oversold (").append((int)s.rsi7).append("). ");
+                int pts = (int)(25 * oscMult);
+                s.rsiScore = pts; longScore += pts;
+                reasoning.append(String.format("RSI(7) oversold(%d,%dpts). ", (int)s.rsi7, pts));
             } else if (s.rsi7 < 45) {
-                s.rsiScore = 12; longScore += 12;
-                reasoning.append("RSI(7) bas (").append((int)s.rsi7).append("). ");
+                int pts = (int)(12 * oscMult);
+                s.rsiScore = pts; longScore += pts;
+                reasoning.append(String.format("RSI(7) bas(%d,%dpts). ", (int)s.rsi7, pts));
             } else if (s.rsi7 > 70) {
-                s.rsiScore = -25; shortScore += 25;
-                reasoning.append("RSI(7) overbought (").append((int)s.rsi7).append("). ");
+                int pts = (int)(25 * oscMult);
+                s.rsiScore = -pts; shortScore += pts;
+                reasoning.append(String.format("RSI(7) overbought(%d,%dpts). ", (int)s.rsi7, pts));
             } else if (s.rsi7 > 55) {
-                s.rsiScore = -12; shortScore += 12;
-                reasoning.append("RSI(7) haut (").append((int)s.rsi7).append("). ");
+                int pts = (int)(12 * oscMult);
+                s.rsiScore = -pts; shortScore += pts;
+                reasoning.append(String.format("RSI(7) haut(%d,%dpts). ", (int)s.rsi7, pts));
             } else {
                 reasoning.append("RSI(7) neutre (").append((int)s.rsi7).append("). ");
             }
 
-            // RSI dynamics: slope (+5), acceleration (+5), divergence (+10)
+            // RSI dynamics: slope (+5), acceleration (+5), divergence (+7) — scaled by oscMult
             int rsiDynLong = 0, rsiDynShort = 0;
 
-            // Slope: RSI rising → LONG bias, falling → SHORT bias
             if (s.rsiSlope > 0.5) {
-                rsiDynLong  += 5;
-                reasoning.append(String.format("RSI↑pente+%.1f. ", s.rsiSlope));
+                int pts = (int)(5 * oscMult);
+                rsiDynLong  += pts;
+                reasoning.append(String.format("RSI↑pente+%.1f(%dpts). ", s.rsiSlope, pts));
             } else if (s.rsiSlope < -0.5) {
-                rsiDynShort += 5;
-                reasoning.append(String.format("RSI↓pente%.1f. ", s.rsiSlope));
+                int pts = (int)(5 * oscMult);
+                rsiDynShort += pts;
+                reasoning.append(String.format("RSI↓pente%.1f(%dpts). ", s.rsiSlope, pts));
             }
 
-            // Acceleration: RSI speeding up in same direction → extra confidence
             if (s.rsiAcceleration > 0.3) {
-                rsiDynLong  += 5;
-                reasoning.append(String.format("RSI accél+%.1f. ", s.rsiAcceleration));
+                int pts = (int)(5 * oscMult);
+                rsiDynLong  += pts;
+                reasoning.append(String.format("RSI accél+%.1f(%dpts). ", s.rsiAcceleration, pts));
             } else if (s.rsiAcceleration < -0.3) {
-                rsiDynShort += 5;
-                reasoning.append(String.format("RSI accél%.1f. ", s.rsiAcceleration));
+                int pts = (int)(5 * oscMult);
+                rsiDynShort += pts;
+                reasoning.append(String.format("RSI accél%.1f(%dpts). ", s.rsiAcceleration, pts));
             }
 
             // Divergence: stricter score ±7 (was ±10) aligned with reduced threshold
             if ("BULLISH".equals(s.rsiDivergence)) {
-                rsiDynLong  += 7;
-                reasoning.append("Divergence RSI haussière. ");
+                int pts = (int)(7 * oscMult);
+                rsiDynLong  += pts;
+                reasoning.append(String.format("Divergence RSI haussière(%dpts). ", pts));
             } else if ("BEARISH".equals(s.rsiDivergence)) {
-                rsiDynShort += 7;
-                reasoning.append("Divergence RSI baissière. ");
+                int pts = (int)(7 * oscMult);
+                rsiDynShort += pts;
+                reasoning.append(String.format("Divergence RSI baissière(%dpts). ", pts));
             }
 
             s.rsiDynScore = rsiDynLong > rsiDynShort ? rsiDynLong : -rsiDynShort;
             longScore  += rsiDynLong;
             shortScore += rsiDynShort;
 
-            // EMA cross: price > EMA5 > EMA13 = LONG, price < EMA5 < EMA13 = SHORT
+            // EMA cross: price > EMA5 > EMA13 = LONG, price < EMA5 < EMA13 = SHORT — scaled by trendMult
             if (price > s.ema5 && s.ema5 > s.ema13) {
-                s.emaScore = 25; longScore += 25;
-                reasoning.append("EMA5>EMA13 bullish. ");
+                int pts = (int)(25 * trendMult);
+                s.emaScore = pts; longScore += pts;
+                reasoning.append(String.format("EMA5>EMA13 bullish(%dpts). ", pts));
             } else if (price < s.ema5 && s.ema5 < s.ema13) {
-                s.emaScore = -25; shortScore += 25;
-                reasoning.append("EMA5<EMA13 bearish. ");
+                int pts = (int)(25 * trendMult);
+                s.emaScore = -pts; shortScore += pts;
+                reasoning.append(String.format("EMA5<EMA13 bearish(%dpts). ", pts));
             } else if (price > s.ema13) {
-                s.emaScore = 10; longScore += 10;
-                reasoning.append("Prix > EMA13. ");
+                int pts = (int)(10 * trendMult);
+                s.emaScore = pts; longScore += pts;
+                reasoning.append(String.format("Prix > EMA13(%dpts). ", pts));
             } else if (price < s.ema13) {
-                s.emaScore = -10; shortScore += 10;
-                reasoning.append("Prix < EMA13. ");
+                int pts = (int)(10 * trendMult);
+                s.emaScore = -pts; shortScore += pts;
+                reasoning.append(String.format("Prix < EMA13(%dpts). ", pts));
             }
 
-            // MACD histogram — proportional scoring (continuous formula, no tier branches)
-            // macdStrength = 0.10 → ~7 pts, 0.25 → 13 pts, 0.50+ → 20 pts
+            // MACD histogram — proportional scoring scaled by trendMult
             double macdStrength = s.atr > 0 ? Math.abs(s.macdHistogram) / s.atr : 0;
-            int macdPts = (int) Math.min(20, Math.max(3, macdStrength * 40));
+            int macdPts = (int)(Math.min(20, Math.max(3, macdStrength * 40)) * trendMult);
             if (s.macdHistogram > 0) {
                 s.macdScore = macdPts; longScore += macdPts;
                 reasoning.append(String.format("MACD+%.2f(%dpts). ", s.macdHistogram, macdPts));
@@ -287,28 +312,46 @@ public class ScalpingAnalysisService {
                 reasoning.append("Vente (").append((int)s.volumeDeltaPct).append("%). ");
             }
 
-            // Stochastic — extreme zones only: depth < 10 / > 90 = 15 pts, else 10 pts
+            // Stochastic — extreme zones only, scaled by oscMult
             if (s.stochK < 20 && s.stochD < 20) {
-                int stochPts = s.stochK < 10 ? 15 : 10;
+                int stochPts = (int)((s.stochK < 10 ? 15 : 10) * oscMult);
                 longScore += stochPts;
                 reasoning.append(String.format("Stoch oversold(K=%.0f,%dpts). ", s.stochK, stochPts));
             } else if (s.stochK > 80 && s.stochD > 80) {
-                int stochPts = s.stochK > 90 ? 15 : 10;
+                int stochPts = (int)((s.stochK > 90 ? 15 : 10) * oscMult);
                 shortScore += stochPts;
                 reasoning.append(String.format("Stoch overbought(K=%.0f,%dpts). ", s.stochK, stochPts));
             }
 
-            // VWAP — continuous proportional scoring (max 20 pts), neutral zone < 0.05% → 0
-            // Math.max(0, ...) handles the neutral zone transparently, no explicit branch needed
+            // VWAP — régime-aware scoring (max 20 pts)
+            // Trend (BB Width > 0.6%) : momentum    — prix > VWAP confirme LONG
+            // Range (BB Width 0.3–0.6%): mean-reversion — prix > VWAP = fade → SHORT
+            // Squeeze (< 0.3%) : déjà filtré WAIT en amont, pas de points
             double vwapDeltaPct = r2((price - s.vwap) / s.vwap * 100);
             double vwapDistAbs  = Math.abs(vwapDeltaPct);
             int vwapPts = (int) Math.min(20, Math.max(0, (vwapDistAbs - 0.05) / 0.25 * 20));
-            if (price > s.vwap) {
-                s.vwapScore = vwapPts; longScore += vwapPts;
-                reasoning.append(String.format("Prix>VWAP(%+.2f%%,%dpts). ", vwapDeltaPct, vwapPts));
-            } else if (price < s.vwap) {
-                s.vwapScore = -vwapPts; shortScore += vwapPts;
-                reasoning.append(String.format("Prix<VWAP(%.2f%%,%dpts). ", vwapDeltaPct, vwapPts));
+            boolean vwapTrend = !"RANGE".equals(s.marketRegime);  // TREND or NEUTRAL → momentum ; RANGE → mean-reversion
+            boolean priceAboveVwap = price > s.vwap;
+            if (vwapPts > 0) {
+                if (vwapTrend) {
+                    // Momentum : suit la direction de l'écart
+                    if (priceAboveVwap) {
+                        s.vwapScore = vwapPts; longScore += vwapPts;
+                        reasoning.append(String.format("VWAP↑momentum(%+.2f%%,%dpts). ", vwapDeltaPct, vwapPts));
+                    } else {
+                        s.vwapScore = -vwapPts; shortScore += vwapPts;
+                        reasoning.append(String.format("VWAP↓momentum(%.2f%%,%dpts). ", vwapDeltaPct, vwapPts));
+                    }
+                } else {
+                    // Mean-reversion : fade l'écart (direction opposée)
+                    if (priceAboveVwap) {
+                        s.vwapScore = -vwapPts; shortScore += vwapPts;
+                        reasoning.append(String.format("VWAP↑reversion(%+.2f%%,%dpts→SHORT). ", vwapDeltaPct, vwapPts));
+                    } else {
+                        s.vwapScore = vwapPts; longScore += vwapPts;
+                        reasoning.append(String.format("VWAP↓reversion(%.2f%%,%dpts→LONG). ", vwapDeltaPct, vwapPts));
+                    }
+                }
             }
 
             // ATR bonus — continuous linear function: 0 pts at 0.08%, 10 pts at ≥0.25%

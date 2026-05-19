@@ -72,6 +72,14 @@ public class ScalpingSignal {
     public double sma50_1m;
     /** VWAP over the full 1m window (~3h20). Price > VWAP → buying pressure. Scoring proportional to distance (max ±20 pts). */
     public double vwap;
+    /** ADX(14) — trend strength: >25 = strong trend, <20 = ranging market */
+    public double adx;
+    /** +DI (bullish directional strength) */
+    public double plusDI;
+    /** -DI (bearish directional strength) */
+    public double minusDI;
+    /** "TREND" (ADX>25) / "RANGE" (ADX<20) / "NEUTRAL" (20–25). Drives oscillator/trend multipliers. */
+    public String marketRegime;
 
     // ── Score breakdown ──────────────────────────────────────────────────────
     public int rsiScore;

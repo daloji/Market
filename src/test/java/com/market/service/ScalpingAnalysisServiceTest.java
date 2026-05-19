@@ -294,24 +294,32 @@ class ScalpingAnalysisServiceTest {
     // ── VWAP signal contribution ───────────────────────────────────────────────
 
     @Test
-    void getSignal_priceAboveVwap_vwapScorePositive() {
-        // Bullish candles: recent close > VWAP → vwapScore should be positive (LONG bias)
+    void getSignal_priceAboveVwap_vwapScoreRegimeAware() {
+        // Regime-aware (ADX-based): TREND/NEUTRAL → momentum (positive), RANGE → mean-reversion (negative)
         when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
                 .thenReturn(buildCandles(200, 50_000, CandlePattern.BULLISH));
         ScalpingSignal s = service.getSignal();
-        if (s.error == null && s.currentPrice > s.vwap) {
-            assertTrue(s.vwapScore > 0, "vwapScore should be positive when price > VWAP");
+        if (s.error == null && s.currentPrice > s.vwap && s.vwapScore != 0) {
+            if (!"RANGE".equals(s.marketRegime)) {
+                assertTrue(s.vwapScore > 0, "Trend/Neutral regime: price > VWAP should give positive vwapScore (momentum)");
+            } else {
+                assertTrue(s.vwapScore < 0, "Range regime: price > VWAP should give negative vwapScore (mean-reversion)");
+            }
         }
     }
 
     @Test
-    void getSignal_priceBelowVwap_vwapScoreNegative() {
-        // Bearish candles: recent close < VWAP → vwapScore should be negative (SHORT bias)
+    void getSignal_priceBelowVwap_vwapScoreRegimeAware() {
+        // Regime-aware (ADX-based): TREND/NEUTRAL → momentum (negative), RANGE → mean-reversion (positive)
         when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
                 .thenReturn(buildCandles(200, 50_000, CandlePattern.BEARISH));
         ScalpingSignal s = service.getSignal();
-        if (s.error == null && s.currentPrice < s.vwap) {
-            assertTrue(s.vwapScore < 0, "vwapScore should be negative when price < VWAP");
+        if (s.error == null && s.currentPrice < s.vwap && s.vwapScore != 0) {
+            if (!"RANGE".equals(s.marketRegime)) {
+                assertTrue(s.vwapScore < 0, "Trend/Neutral regime: price < VWAP should give negative vwapScore (momentum)");
+            } else {
+                assertTrue(s.vwapScore > 0, "Range regime: price < VWAP should give positive vwapScore (mean-reversion)");
+            }
         }
     }
 
