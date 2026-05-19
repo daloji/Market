@@ -130,6 +130,9 @@ public class ScalpingAnalysisService {
             // SMA(50) on 1m — medium-term trend filter
             s.sma50_1m = n >= 50 ? ta.calculateSMA(closeList, 50) : s.ema13;
 
+            // VWAP over the full 1m window
+            s.vwap = r2(ta.calculateVWAP(highs, lows, closes, volumes));
+
             // MACD(6, 13, 4) — faster MACD for 1m scalping
             double[] macd = calculateFastMACD(closeList, 6, 13, 4);
             s.macdLine      = r2(macd[0]);
@@ -277,6 +280,16 @@ public class ScalpingAnalysisService {
             } else if (s.stochK > 80 && s.stochD > 80) {
                 shortScore += 10;
                 reasoning.append("Stoch overbought. ");
+            }
+
+            // VWAP: price above VWAP = buying pressure (LONG), below = selling (SHORT)
+            double vwapDeltaPct = r2((price - s.vwap) / s.vwap * 100);
+            if (price > s.vwap) {
+                s.vwapScore = 15; longScore += 15;
+                reasoning.append(String.format("Prix>VWAP(+%.2f%%). ", vwapDeltaPct));
+            } else if (price < s.vwap) {
+                s.vwapScore = -15; shortScore += 15;
+                reasoning.append(String.format("Prix<VWAP(%.2f%%). ", vwapDeltaPct));
             }
 
             // ── Direction decision ────────────────────────────────────────────

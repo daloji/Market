@@ -7,7 +7,7 @@ import java.util.List;
  * Ultra-short-term scalping signal for BTC/USDT based on 1m candles.
  * Returned by /api/crypto/btc/scalping.
  *
- * Indicators: RSI(7), EMA(5)/EMA(13), MACD(6,13,4), ATR(7), Bollinger(20), Stochastic(5,3), Volume Delta, SMA(50) trend.
+ * Indicators: RSI(7), EMA(5)/EMA(13), MACD(6,13,4), ATR(7), Bollinger(20), Stochastic(5,3), Volume Delta, SMA(50) trend, VWAP.
  *
  * Filters applied before generating a signal:
  *   - BB SQUEEZE blocked (bbWidth < 0.3%)
@@ -69,12 +69,15 @@ public class ScalpingSignal {
     public String volumeDeltaTrend;
     /** SMA(50) on 1m — medium-term trend filter. Price > sma50_1m → uptrend. */
     public double sma50_1m;
+    /** VWAP over the full 1m window (~3h20). Price > VWAP → buying pressure. */
+    public double vwap;
 
     // ── Score breakdown ──────────────────────────────────────────────────────
     public int rsiScore;
     public int emaScore;
     public int macdScore;
     public int volScore;
+    public int vwapScore;
 
     // ── RSI dynamics ─────────────────────────────────────────────────────────
     /** RSI value 1 candle ago (for slope) */

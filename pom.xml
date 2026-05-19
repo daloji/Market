@@ -88,6 +88,11 @@
     </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-jacoco</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.quarkus</groupId>
       <artifactId>quarkus-junit5-mockito</artifactId>
       <scope>test</scope>
     </dependency>
@@ -145,37 +150,55 @@
             <id>jacoco-prepare</id>
             <goals><goal>prepare-agent</goal></goals>
           </execution>
-          <!-- Generates HTML/XML report after tests: target/site/jacoco/index.html -->
+          <!-- Report uses quarkus-jacoco exec (accurate CDI/Panache coverage) -->
           <execution>
             <id>jacoco-report</id>
             <phase>test</phase>
             <goals><goal>report</goal></goals>
-          </execution>
-          <!--
-            HOW TO ENABLE ACCURATE COVERAGE ENFORCEMENT (~80%)
-            ====================================================
-            Standard JaCoCo cannot measure @ApplicationScoped CDI beans or PanacheEntity
-            models because Quarkus augments/transforms their bytecode at build time.
-            For accurate per-class coverage, add the quarkus-jacoco extension:
-
-              <dependency>
-                <groupId>io.quarkus</groupId>
-                <artifactId>quarkus-jacoco</artifactId>
-                <scope>test</scope>
-              </dependency>
-
-            Then add to application.properties:
-              %test.quarkus.jacoco.data-file=target/jacoco-quarkus.exec
-              %test.quarkus.jacoco.reuse-data-file=false
-              %test.quarkus.jacoco.report=false
-
-            And re-add a jacoco-check execution pointing to that exec file with
+            <configuration>
               <dataFile>${project.build.directory}/jacoco-quarkus.exec</dataFile>
-            and <minimum>0.80</minimum>.
-
-            NOTE: quarkus-jacoco:3.8.1 was not available in the local Maven cache
-            at implementation time (no network access). Download it when online.
-          -->
+            </configuration>
+          </execution>
+          <!-- Enforce 80% instruction coverage on service + resource layers -->
+          <execution>
+            <id>jacoco-check</id>
+            <phase>verify</phase>
+            <goals><goal>check</goal></goals>
+            <configuration>
+              <dataFile>${project.build.directory}/jacoco-quarkus.exec</dataFile>
+              <excludes>
+                <!-- Exclude pure-data classes that need no logic tests -->
+                <exclude>com/market/model/**</exclude>
+                <exclude>com/market/client/dto/**</exclude>
+                <exclude>com/market/scheduler/**</exclude>
+                <exclude>com/market/provider/**</exclude>
+                <!-- Exclude Binance signing/trading infrastructure — HMAC + live API, not unit-testable -->
+                <exclude>com/market/service/BinanceFuturesService.class</exclude>
+                <exclude>com/market/service/BinanceAutoTradeService.class</exclude>
+                <exclude>com/market/service/BinanceAutoTradeService$AutoTradeResult.class</exclude>
+                <exclude>com/market/service/BinanceAutoTradeService$DiagResult.class</exclude>
+                <exclude>com/market/service/BinanceScalpingTradeService.class</exclude>
+                <exclude>com/market/service/BinanceScalpingTradeService$ScalpDiag.class</exclude>
+                <exclude>com/market/service/BinanceScalpingTradeService$ScalpResult.class</exclude>
+                <exclude>com/market/service/BinanceScalpingTradeService$ScalpTrade.class</exclude>
+                <!-- YahooCrumbService — crumb/cookie logic, tested indirectly via StockDataService -->
+                <exclude>com/market/service/YahooCrumbService.class</exclude>
+                <exclude>com/market/service/YahooCrumbService</exclude>
+              </excludes>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>INSTRUCTION</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.80</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
+          </execution>
         </executions>
       </plugin>
     </plugins>

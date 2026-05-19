@@ -1,5 +1,6 @@
 package com.market.resource;
 
+import com.market.client.BinanceClient;
 import com.market.model.BitcoinSignal;
 import com.market.model.ScalpingSignal;
 import com.market.service.CryptoAnalysisService;
@@ -7,16 +8,23 @@ import com.market.service.ScalpingAnalysisService;
 import com.market.service.TelegramAlertService;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.mockito.InjectMock;
+import org.eclipse.microprofile.rest.client.inject.RestClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.*;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
  * Integration tests for CryptoResource (/api/crypto).
- * CryptoAnalysisService, ScalpingAnalysisService and TelegramAlertService are mocked.
+ * CryptoAnalysisService, ScalpingAnalysisService, TelegramAlertService
+ * and BinanceClient are mocked.
  */
 @QuarkusTest
 class CryptoResourceTest {
@@ -30,11 +38,17 @@ class CryptoResourceTest {
     @InjectMock
     TelegramAlertService telegramAlertService;
 
+    @InjectMock
+    @RestClient
+    BinanceClient binanceClient;
+
     @BeforeEach
     void setup() {
         when(cryptoService.getSignal()).thenReturn(btcSignal("LONG", 72, 95_000.0));
         when(scalpingService.getSignal()).thenReturn(scalpingSignal("WAIT", 50, 95_000.0));
         when(telegramAlertService.isEnabled()).thenReturn(false);
+        when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
+                .thenReturn(Collections.emptyList());
     }
 
     // ── GET /api/crypto/btc/signal ────────────────────────────────────────────
@@ -170,6 +184,58 @@ class CryptoResourceTest {
             .body("error", equalTo("API timeout"));
 
         verify(telegramAlertService, never()).sendTest(any());
+    }
+
+    // ── GET /api/crypto/btc/candles ───────────────────────────────────────────
+
+    @Test
+    void getCandles_noData_returnsEmptyArray() {
+        when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
+                .thenReturn(Collections.emptyList());
+        given()
+            .when().get("/api/crypto/btc/candles")
+            .then()
+            .statusCode(200)
+            .body("size()", equalTo(0));
+    }
+
+    @Test
+    void getCandles_withData_returnsMappedCandles() {
+        List<List<Object>> raw = List.of(
+            Arrays.asList(1_700_000_000_000L, "50000.0", "51000.0", "49000.0", "50500.0", "100.0",
+                          1_700_000_060_000L, "5050000.0", 100, "50.0", "2525000.0", "0"),
+            Arrays.asList(1_700_000_060_000L, "50500.0", "51500.0", "50000.0", "51000.0", "120.0",
+                          1_700_000_120_000L, "6120000.0", 110, "60.0", "3060000.0", "0")
+        );
+        when(binanceClient.getKlines(anyString(), anyString(), anyInt())).thenReturn(raw);
+        given()
+            .queryParam("interval", "1m")
+            .queryParam("limit",    "2")
+            .when().get("/api/crypto/btc/candles")
+            .then()
+            .statusCode(200)
+            .body("size()",      equalTo(2))
+            .body("[0].close",   equalTo(50_500.0f))
+            .body("[1].close",   equalTo(51_000.0f));
+    }
+
+    @Test
+    void getCandles_defaultParams_callsBinanceWith1hInterval() {
+        given()
+            .when().get("/api/crypto/btc/candles")
+            .then()
+            .statusCode(200);
+        verify(binanceClient).getKlines(eq("BTCUSDT"), eq("1h"), anyInt());
+    }
+
+    @Test
+    void getCandles_limitCappedAt500() {
+        given()
+            .queryParam("limit", "9999")
+            .when().get("/api/crypto/btc/candles")
+            .then()
+            .statusCode(200);
+        verify(binanceClient).getKlines(anyString(), anyString(), eq(500));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

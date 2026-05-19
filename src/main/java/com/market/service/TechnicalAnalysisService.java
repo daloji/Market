@@ -338,6 +338,24 @@ public class TechnicalAnalysisService {
         return atr;
     }
 
+    // ── VWAP (Volume Weighted Average Price) ─────────────────────────────────
+
+    /**
+     * VWAP over all provided candles: Σ(typicalPrice × volume) / Σ(volume).
+     * Typical price = (high + low + close) / 3.
+     * Arrays must be same length and in chronological order (oldest first).
+     */
+    public double calculateVWAP(double[] highs, double[] lows, double[] closes, double[] volumes) {
+        double cumTPV = 0.0;
+        double cumVol = 0.0;
+        for (int i = 0; i < closes.length; i++) {
+            double tp = (highs[i] + lows[i] + closes[i]) / 3.0;
+            cumTPV += tp * volumes[i];
+            cumVol += volumes[i];
+        }
+        return cumVol > 0 ? cumTPV / cumVol : closes[closes.length - 1];
+    }
+
     // ── Market Structure ──────────────────────────────────────────────────────
 
     /**

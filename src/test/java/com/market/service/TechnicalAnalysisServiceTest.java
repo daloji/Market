@@ -391,4 +391,69 @@ class TechnicalAnalysisServiceTest {
         }
         assertTrue(svc.computeATR(h, l, c, 14) >= 0, "ATR must be non-negative");
     }
+
+    // ══════════════════════════════════  VWAP  ════════════════════════════════
+
+    @Test
+    void vwap_uniformCandles_equalsTypicalPrice() {
+        // All candles identical → VWAP = (high+low+close)/3
+        int n = 20;
+        double[] h = new double[n], l = new double[n], c = new double[n], v = new double[n];
+        for (int i = 0; i < n; i++) { h[i] = 105; l[i] = 95; c[i] = 100; v[i] = 1000; }
+        double expected = (105 + 95 + 100) / 3.0;
+        assertEquals(expected, svc.calculateVWAP(h, l, c, v), 0.001);
+    }
+
+    @Test
+    void vwap_heavierVolumeAtLowerPrice_belowSimpleAvg() {
+        // Two candles: one at 100 (low price, high volume), one at 200 (high price, low volume)
+        double[] h = {101, 201}, l = {99, 199}, c = {100, 200}, v = {9000, 1000};
+        double vwap = svc.calculateVWAP(h, l, c, v);
+        // VWAP should be closer to 100 than to 150 (simple avg of typical prices)
+        assertTrue(vwap < 125, "VWAP should be pulled toward the high-volume candle, got " + vwap);
+        assertTrue(vwap > 100, "VWAP must be above the lowest typical price, got " + vwap);
+    }
+
+    @Test
+    void vwap_heavierVolumeAtHigherPrice_aboveSimpleAvg() {
+        // Two candles: one at 100 (low price, low volume), one at 200 (high price, high volume)
+        double[] h = {101, 201}, l = {99, 199}, c = {100, 200}, v = {1000, 9000};
+        double vwap = svc.calculateVWAP(h, l, c, v);
+        assertTrue(vwap > 175, "VWAP should be pulled toward the high-volume candle, got " + vwap);
+    }
+
+    @Test
+    void vwap_singleCandle_equalsItsTypicalPrice() {
+        double[] h = {110}, l = {90}, c = {100}, v = {500};
+        double expected = (110 + 90 + 100) / 3.0;
+        assertEquals(expected, svc.calculateVWAP(h, l, c, v), 0.001);
+    }
+
+    @Test
+    void vwap_zeroVolume_fallsBackToLastClose() {
+        double[] h = {105, 110}, l = {95, 90}, c = {100, 95}, v = {0, 0};
+        // All volumes zero → returns last close
+        assertEquals(95.0, svc.calculateVWAP(h, l, c, v), 0.001);
+    }
+
+    @Test
+    void vwap_alwaysBetweenMinAndMaxTypicalPrice() {
+        int n = 30;
+        double[] h = new double[n], l = new double[n], c = new double[n], v = new double[n];
+        for (int i = 0; i < n; i++) {
+            c[i] = 100 + (i % 7) * 5;
+            h[i] = c[i] + 3;
+            l[i] = c[i] - 3;
+            v[i] = 1000 + (i % 5) * 200;
+        }
+        double vwap = svc.calculateVWAP(h, l, c, v);
+        double minTP = Double.MAX_VALUE, maxTP = Double.MIN_VALUE;
+        for (int i = 0; i < n; i++) {
+            double tp = (h[i] + l[i] + c[i]) / 3.0;
+            minTP = Math.min(minTP, tp);
+            maxTP = Math.max(maxTP, tp);
+        }
+        assertTrue(vwap >= minTP && vwap <= maxTP,
+                String.format("VWAP %.2f must be in [%.2f, %.2f]", vwap, minTP, maxTP));
+    }
 }
