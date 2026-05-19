@@ -1096,6 +1096,12 @@ Bougie extrême (range &gt; 3×ATR) : event violent → bloqué">Filtre volatili
         <div id="scalping-wallet-total" style="font-size:15px;font-weight:700;color:var(--text)">—</div>
         <div id="scalping-wallet-avail" style="font-size:11px;color:var(--muted)">dispo: —</div>
       </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;margin-left:8px"
+           data-tooltip="SL consécutifs depuis le dernier TP\nPause 30 min après 2 SL d'affilée">
+        <div style="font-size:10px;color:var(--muted)">SL CONSEC.</div>
+        <div id="scalping-streak" style="font-size:15px;font-weight:700;color:var(--text)">—</div>
+        <div id="scalping-streak-cool" style="font-size:11px;color:#f87171;display:none">⏸ pause</div>
+      </div>
     </div>
     <div id="scalping-last-result" style="padding:7px 10px;background:var(--bg);border-radius:6px;font-size:12px;color:var(--muted);line-height:1.5;border:1px solid var(--border)">
       En attente du premier cycle…
@@ -1231,9 +1237,13 @@ DIV↓ : divergence baissière (+10 pts)">RSI(7)</div>
       <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="EMA 5 / EMA 13 (bougies 1 min)
 EMA 5 > EMA 13 → tendance haussière
 EMA 5 < EMA 13 → tendance baissière
-Croisement = changement de direction imminant">EMA 5/13</div>
+SMA50 = filtre tendance moyen-terme
+↑ price > SMA50 → LONG facilité (seuil 72)
+↓ price < SMA50 → SHORT facilité (seuil 72)
+Contre-tendance : seuil 85 requis">EMA 5/13</div>
       <div id="scalping-ema" style="font-size:12px;font-weight:600">—</div>
       <div id="scalping-ema-status" style="font-size:11px;margin-top:6px;color:var(--muted)">—</div>
+      <div id="scalping-sma50-trend" style="font-size:10px;margin-top:4px;color:var(--muted)">—</div>
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px">
       <div style="font-size:10px;color:var(--muted);margin-bottom:4px" data-tooltip="MACD (6,13,4) — 1 minute

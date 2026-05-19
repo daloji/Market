@@ -37,7 +37,9 @@ public class BinanceScalpingTradeService {
 
     private static final Logger LOG = Logger.getLogger(BinanceScalpingTradeService.class);
 
-    private static final long   COOLDOWN_MS      = 5L * 60 * 1000;
+    private static final long   COOLDOWN_MS          = 10L * 60 * 1000;   // 10 min (was 5)
+    private static final long   LOSS_STREAK_COOL_MS  = 30L * 60 * 1000;   // 30 min after streak
+    private static final int    LOSS_STREAK_LIMIT    = 2;                  // pause after 2 SL
     private static final double DEFAULT_AMOUNT   = 20.0;
     private static final int    DEFAULT_LEVERAGE = 10;
     private static final double DEFAULT_TP_PCT   = 0.3;
@@ -58,6 +60,11 @@ public class BinanceScalpingTradeService {
 
     private volatile ScalpResult lastResult;
     private volatile Instant     lastTradeAt;
+
+    /** Consecutive SL hits since last TP or manual reset. */
+    private volatile int     consecutiveLosses  = 0;
+    /** If set, no new trade before this timestamp (loss-streak cooldown). */
+    private volatile Instant lossStreakCoolUntil = null;
 
     // Active position tracking
     private volatile String activeDir;
@@ -212,6 +219,14 @@ public class BinanceScalpingTradeService {
                 return last(ScalpResult.skipped(String.format(
                     "Cooldown — %d min restantes", (COOLDOWN_MS - elapsed) / 60_000 + 1)));
             }
+        }
+
+        // ── Loss-streak protection ────────────────────────────────────────────
+        if (lossStreakCoolUntil != null && Instant.now().isBefore(lossStreakCoolUntil)) {
+            long remaining = (lossStreakCoolUntil.toEpochMilli() - Instant.now().toEpochMilli()) / 60_000 + 1;
+            return last(ScalpResult.skipped(String.format(
+                "Pause série de pertes (%d SL consécutifs) — %d min restantes",
+                consecutiveLosses, remaining)));
         }
 
         // ── Signal check ──────────────────────────────────────────────────────
@@ -414,6 +429,21 @@ public class BinanceScalpingTradeService {
             }
         }
         lastTradeAt = Instant.now();
+        // Track consecutive SL hits for streak protection
+        if (reason != null && reason.contains("SL")) {
+            consecutiveLosses++;
+            if (consecutiveLosses >= LOSS_STREAK_LIMIT) {
+                lossStreakCoolUntil = Instant.now().plusMillis(LOSS_STREAK_COOL_MS);
+                LOG.warnf("[Scalping] ⚠ %d SL consécutifs — pause de 30 min (reprise: %s)",
+                    consecutiveLosses, lossStreakCoolUntil);
+                telegramService.sendCloseAlert(activeDir,
+                    String.format("PAUSE %d SL consécutifs", consecutiveLosses), price, pnl);
+            }
+        } else {
+            // TP or manual → reset streak
+            consecutiveLosses  = 0;
+            lossStreakCoolUntil = null;
+        }
         clearActive();
         return ScalpResult.closed(reason, price, pnl);
     }
@@ -471,6 +501,10 @@ public class BinanceScalpingTradeService {
         m.put("activeOpenedAt",activeDir != null && activeOpenedAt != null
                                ? activeOpenedAt.toString() : null);
         m.put("lastResult",    lastResult != null ? lastResult : Map.of());
+        m.put("consecutiveLosses", consecutiveLosses);
+        if (lossStreakCoolUntil != null && Instant.now().isBefore(lossStreakCoolUntil))
+            m.put("lossStreakCooldown", Math.max(0,
+                lossStreakCoolUntil.toEpochMilli() - Instant.now().toEpochMilli()) / 1000);
         if (lastTradeAt != null)
             m.put("cooldownRemaining", Math.max(0,
                 COOLDOWN_MS - (Instant.now().toEpochMilli() - lastTradeAt.toEpochMilli())) / 1000);

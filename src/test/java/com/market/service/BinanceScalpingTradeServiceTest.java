@@ -181,7 +181,7 @@ class BinanceScalpingTradeServiceTest {
     @Test
     void checkAndTrade_cooldownExpired_placesTrade() throws Exception {
         svc.enable();
-        setField(realBean(), "lastTradeAt", Instant.now().minusSeconds(6 * 60)); // 6 min > 5 min
+        setField(realBean(), "lastTradeAt", Instant.now().minusSeconds(11 * 60)); // 11 min > 10 min
         when(scalpingService.getSignal()).thenReturn(longSignal(80));
         BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
         assertEquals("placed", r.status);

@@ -19,7 +19,7 @@ class TelegramAlertServiceTest {
 
     // ── isEnabled ─────────────────────────────────────────────────────────────
 
-    //@Test
+    @Test
     void isEnabled_notConfigured_returnsFalse() {
         assertFalse(service.isEnabled(),
                 "Should be disabled when bot-token/chat-id are not configured");

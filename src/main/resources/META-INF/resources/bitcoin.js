@@ -1774,7 +1774,7 @@ function renderScalpingSignal(s) {
     rsiDynEl.innerHTML = `${slopeArrow} ${accelIcon} ${divBadge}`;
   }
 
-  // EMA 5/13
+  // EMA 5/13 + SMA50 trend
   document.getElementById('scalping-ema').textContent =
     (s.ema5 ? s.ema5.toFixed(0) : '—') + ' / ' + (s.ema13 ? s.ema13.toFixed(0) : '—');
   const emaStatus = document.getElementById('scalping-ema-status');
@@ -1787,6 +1787,12 @@ function renderScalpingSignal(s) {
     } else {
       emaStatus.textContent = '— Mixte'; emaStatus.style.color = MUTED;
     }
+  }
+  const sma50El = document.getElementById('scalping-sma50-trend');
+  if (sma50El && s.sma50_1m && p) {
+    const upTrend = p > s.sma50_1m;
+    sma50El.textContent = `SMA50: ${s.sma50_1m.toFixed(0)} — ${upTrend ? '↑ seuil LONG 72' : '↓ seuil SHORT 72'} (contre-tendance: 85)`;
+    sma50El.style.color = upTrend ? GREEN : RED;
   }
 
   // MACD
@@ -1943,6 +1949,24 @@ function renderScalpingStatus(s) {
     totalEl.textContent = `$${total.toFixed(2)}`;
     totalEl.style.color = unreal >= 0 ? 'var(--text)' : 'var(--red)';
     availEl.textContent = `dispo: $${avail.toFixed(2)}` + (unreal !== 0 ? ` · PnL: ${unreal >= 0 ? '+' : ''}${unreal.toFixed(2)}$` : '');
+  }
+
+  // Consecutive loss streak
+  const streakEl = document.getElementById('scalping-streak');
+  const coolEl   = document.getElementById('scalping-streak-cool');
+  if (streakEl) {
+    const losses = s.consecutiveLosses ?? 0;
+    streakEl.textContent = losses;
+    streakEl.style.color = losses >= 2 ? 'var(--red)' : losses === 1 ? '#f0b429' : 'var(--text)';
+  }
+  if (coolEl) {
+    const cd = s.lossStreakCooldown;
+    if (cd && cd !== 'none') {
+      coolEl.textContent = `⏸ pause ${cd}`;
+      coolEl.style.display = 'block';
+    } else {
+      coolEl.style.display = 'none';
+    }
   }
 
   // Sync config inputs

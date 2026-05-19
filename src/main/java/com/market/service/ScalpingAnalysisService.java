@@ -127,6 +127,9 @@ public class ScalpingAnalysisService {
             s.ema5  = ta.calculateEMA(closeList, 5);
             s.ema13 = ta.calculateEMA(closeList, 13);
 
+            // SMA(50) on 1m — medium-term trend filter
+            s.sma50_1m = n >= 50 ? ta.calculateSMA(closeList, 50) : s.ema13;
+
             // MACD(6, 13, 4) — faster MACD for 1m scalping
             double[] macd = calculateFastMACD(closeList, 6, 13, 4);
             s.macdLine      = r2(macd[0]);
@@ -142,6 +145,15 @@ public class ScalpingAnalysisService {
             double bbUpper = bb[0], bbMid = bb[1], bbLower = bb[2];
             s.bbWidth = r2((bbUpper - bbLower) / bbMid * 100);
             s.bbState = s.bbWidth < 0.3 ? "SQUEEZE" : s.bbWidth > 1.0 ? "EXPANSION" : "NORMAL";
+
+            // ── Bollinger SQUEEZE gate — no trade when market is flat ─────────
+            if ("SQUEEZE".equals(s.bbState)) {
+                s.direction  = "WAIT";
+                s.confidence = 0;
+                s.reasoning  = "BB SQUEEZE — marché sans direction, pas de trade.";
+                s.candles    = candles.subList(Math.max(0, candles.size() - 100), candles.size());
+                return s;
+            }
 
             // Stochastic(5, 3) — faster than (14,3) for scalping
             double[] stoch = ta.calculateStochastic(highs, lows, closes, 5, 3);
@@ -268,17 +280,27 @@ public class ScalpingAnalysisService {
             }
 
             // ── Direction decision ────────────────────────────────────────────
-            if (longScore >= 65) {
+            // Base threshold = 72 (was 65). Counter-trend trades require 85.
+            boolean upTrend   = price > s.sma50_1m;
+            int longThreshold  = upTrend  ? 72 : 85; // easier to LONG with trend
+            int shortThreshold = !upTrend ? 72 : 85; // easier to SHORT with trend
+            String trendNote   = upTrend ? "↑tendance SMA50" : "↓tendance SMA50";
+
+            if (longScore >= longThreshold) {
                 s.direction  = "LONG";
                 s.confidence = Math.min(100, longScore);
-            } else if (shortScore >= 65) {
+                reasoning.append(trendNote).append(". ");
+            } else if (shortScore >= shortThreshold) {
                 s.direction  = "SHORT";
                 s.confidence = Math.min(100, shortScore);
+                reasoning.append(trendNote).append(". ");
             } else {
                 s.direction  = "WAIT";
                 s.confidence = Math.max(longScore, shortScore);
                 reasoning.append("Signal insuffisant (L:").append(longScore)
-                          .append(" S:").append(shortScore).append(").");
+                          .append("/").append(longThreshold)
+                          .append(" S:").append(shortScore)
+                          .append("/").append(shortThreshold).append(").");
             }
 
             // ── TP / SL (ATR-based, tight for scalping) ───────────────────────
