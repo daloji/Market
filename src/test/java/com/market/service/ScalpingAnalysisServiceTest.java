@@ -315,10 +315,26 @@ class ScalpingAnalysisServiceTest {
         }
     }
 
+    // ── ATR gate ──────────────────────────────────────────────────────────────
+
+    @Test
+    void getSignal_lowVolatility_atrGateReturnsWait() {
+        // LOW_VOLATILITY: closes cycle ±100 (BB > 0.3%) but true range only ±8 → ATR ~0.03% → gate fires
+        when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
+                .thenReturn(buildCandles(200, 50_000, CandlePattern.LOW_VOLATILITY));
+        ScalpingSignal s = service.getSignal();
+        assertNotNull(s);
+        assertEquals("WAIT", s.direction, "Very low ATR should trigger ATR gate");
+        assertEquals(0, s.confidence, "ATR gate should set confidence to 0");
+        assertNotNull(s.reasoning);
+        assertTrue(s.reasoning.contains("ATR"), "Reasoning should mention ATR gate");
+    }
+
     // ── Candle data builder ───────────────────────────────────────────────────
 
     enum CandlePattern {
-        FLAT, SQUEEZE, VOLATILE, BULLISH, BEARISH, HIGH_BUY_VOLUME, HIGH_SELL_VOLUME, STOCH_OVERSOLD
+        FLAT, SQUEEZE, VOLATILE, BULLISH, BEARISH, HIGH_BUY_VOLUME, HIGH_SELL_VOLUME,
+        STOCH_OVERSOLD, LOW_VOLATILITY
     }
 
     /**
@@ -383,6 +399,16 @@ class ScalpingAnalysisServiceTest {
                     close  = basePrice - 900;                           // near bottom
                     vol    = 1000;
                     buyVol = 400;
+                    break;
+
+                case LOW_VOLATILITY:
+                    // Closes cycle ±100 (BB width ~0.48%) but tiny true range (±8) → ATR ~0.03%
+                    // Designed to pass BB squeeze gate but fire the ATR gate
+                    close  = basePrice + ((i % 20) - 10) * 10.0;
+                    high   = close + 8;
+                    low    = close - 8;
+                    vol    = 1000;
+                    buyVol = 500;
                     break;
 
                 default: // VOLATILE / FLAT

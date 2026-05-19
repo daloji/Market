@@ -11,7 +11,8 @@ import java.util.List;
  *
  * Filters applied before generating a signal:
  *   - BB SQUEEZE blocked (bbWidth < 0.3%)
- *   - Score threshold 72 with-trend / 85 counter-trend (SMA50 gate)
+ *   - ATR gate: atrPct < 0.08% → WAIT (market too quiet)
+ *   - Score threshold 78 with-trend / 92 counter-trend (SMA50 gate)
  * TP/SL are ATR-based but very tight (scalping style):
  *   TP1 = entry ± 0.5 × ATR
  *   TP2 = entry ± 1.0 × ATR
@@ -69,7 +70,7 @@ public class ScalpingSignal {
     public String volumeDeltaTrend;
     /** SMA(50) on 1m — medium-term trend filter. Price > sma50_1m → uptrend. */
     public double sma50_1m;
-    /** VWAP over the full 1m window (~3h20). Price > VWAP → buying pressure. */
+    /** VWAP over the full 1m window (~3h20). Price > VWAP → buying pressure. Scoring proportional to distance (max ±20 pts). */
     public double vwap;
 
     // ── Score breakdown ──────────────────────────────────────────────────────
@@ -78,6 +79,10 @@ public class ScalpingSignal {
     public int macdScore;
     public int volScore;
     public int vwapScore;
+    /** ATR volatility bonus applied symmetrically to both sides (+0/+5/+10 pts). */
+    public int atrScore;
+    /** Last candle body direction confirmation (+5 bullish / -5 bearish). */
+    public int candleBodyScore;
 
     // ── RSI dynamics ─────────────────────────────────────────────────────────
     /** RSI value 1 candle ago (for slope) */

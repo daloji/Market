@@ -25,7 +25,8 @@ import java.util.stream.Collectors;
  * TP/SL are ATR(7)-based, very tight for scalping:
  *   TP1 = 0.5 × ATR, TP2 = 1.0 × ATR, SL = 0.4 × ATR
  *
- * Signal: score >= 65 → BUY/SHORT, else WAIT.
+ * Signal: score >= 78 → LONG/SHORT, else WAIT.
+ * Thresholds: 78 with-trend (SMA50), 92 counter-trend.
  * Cache TTL: 10 seconds (fast refresh for scalping).
  */
 @ApplicationScoped
@@ -112,13 +113,14 @@ public class ScalpingAnalysisService {
             s.rsiAcceleration = r2(s.rsiSlope - r2(s.rsiPrev - s.rsiPrev2));
 
             // RSI divergence over last 5 candles (price slope vs RSI slope)
-            double priceSlope5 = closes[n - 1] - closes[n - 5]; // price direction
+            // Threshold 3.0 (was 1.5) to cut 1m noise-induced fake divergences
+            double priceSlope5 = closes[n - 1] - closes[n - 5];
             double rsi5ago     = ta.calculateRSI(closeList.subList(0, n - 4), 7);
-            double rsiSlope5   = s.rsi7 - rsi5ago;               // RSI direction
-            if (priceSlope5 < 0 && rsiSlope5 > 1.5) {
-                s.rsiDivergence = "BULLISH"; // price down but RSI up → reversal LONG
-            } else if (priceSlope5 > 0 && rsiSlope5 < -1.5) {
-                s.rsiDivergence = "BEARISH"; // price up but RSI down → reversal SHORT
+            double rsiSlope5   = s.rsi7 - rsi5ago;
+            if (priceSlope5 < 0 && rsiSlope5 > 3.0) {
+                s.rsiDivergence = "BULLISH";
+            } else if (priceSlope5 > 0 && rsiSlope5 < -3.0) {
+                s.rsiDivergence = "BEARISH";
             } else {
                 s.rsiDivergence = "NONE";
             }
@@ -154,6 +156,15 @@ public class ScalpingAnalysisService {
                 s.direction  = "WAIT";
                 s.confidence = 0;
                 s.reasoning  = "BB SQUEEZE — marché sans direction, pas de trade.";
+                s.candles    = candles.subList(Math.max(0, candles.size() - 100), candles.size());
+                return s;
+            }
+
+            // ── ATR gate — no trade when market is too quiet ──────────────────
+            if (s.atrPct < 0.08) {
+                s.direction  = "WAIT";
+                s.confidence = 0;
+                s.reasoning  = String.format("ATR trop bas (%.2f%%) — volatilité insuffisante pour scalper.", s.atrPct);
                 s.candles    = candles.subList(Math.max(0, candles.size() - 100), candles.size());
                 return s;
             }
@@ -221,12 +232,12 @@ public class ScalpingAnalysisService {
                 reasoning.append(String.format("RSI accél%.1f. ", s.rsiAcceleration));
             }
 
-            // Divergence: strongest signal
+            // Divergence: stricter score ±7 (was ±10) aligned with reduced threshold
             if ("BULLISH".equals(s.rsiDivergence)) {
-                rsiDynLong  += 10;
+                rsiDynLong  += 7;
                 reasoning.append("Divergence RSI haussière. ");
             } else if ("BEARISH".equals(s.rsiDivergence)) {
-                rsiDynShort += 10;
+                rsiDynShort += 7;
                 reasoning.append("Divergence RSI baissière. ");
             }
 
@@ -249,13 +260,16 @@ public class ScalpingAnalysisService {
                 reasoning.append("Prix < EMA13. ");
             }
 
-            // MACD histogram positive/rising = LONG, negative/falling = SHORT
+            // MACD histogram — proportional scoring (continuous formula, no tier branches)
+            // macdStrength = 0.10 → ~7 pts, 0.25 → 13 pts, 0.50+ → 20 pts
+            double macdStrength = s.atr > 0 ? Math.abs(s.macdHistogram) / s.atr : 0;
+            int macdPts = (int) Math.min(20, Math.max(3, macdStrength * 40));
             if (s.macdHistogram > 0) {
-                s.macdScore = 25; longScore += 25;
-                reasoning.append("MACD hist+. ");
+                s.macdScore = macdPts; longScore += macdPts;
+                reasoning.append(String.format("MACD+%.2f(%dpts). ", s.macdHistogram, macdPts));
             } else if (s.macdHistogram < 0) {
-                s.macdScore = -25; shortScore += 25;
-                reasoning.append("MACD hist-. ");
+                s.macdScore = -macdPts; shortScore += macdPts;
+                reasoning.append(String.format("MACD%.2f(%dpts). ", s.macdHistogram, macdPts));
             }
 
             // Volume delta
@@ -273,30 +287,66 @@ public class ScalpingAnalysisService {
                 reasoning.append("Vente (").append((int)s.volumeDeltaPct).append("%). ");
             }
 
-            // Stochastic confirmation
+            // Stochastic — extreme zones only: depth < 10 / > 90 = 15 pts, else 10 pts
             if (s.stochK < 20 && s.stochD < 20) {
-                longScore += 10;
-                reasoning.append("Stoch oversold. ");
+                int stochPts = s.stochK < 10 ? 15 : 10;
+                longScore += stochPts;
+                reasoning.append(String.format("Stoch oversold(K=%.0f,%dpts). ", s.stochK, stochPts));
             } else if (s.stochK > 80 && s.stochD > 80) {
-                shortScore += 10;
-                reasoning.append("Stoch overbought. ");
+                int stochPts = s.stochK > 90 ? 15 : 10;
+                shortScore += stochPts;
+                reasoning.append(String.format("Stoch overbought(K=%.0f,%dpts). ", s.stochK, stochPts));
             }
 
-            // VWAP: price above VWAP = buying pressure (LONG), below = selling (SHORT)
+            // VWAP — continuous proportional scoring (max 20 pts), neutral zone < 0.05% → 0
+            // Math.max(0, ...) handles the neutral zone transparently, no explicit branch needed
             double vwapDeltaPct = r2((price - s.vwap) / s.vwap * 100);
+            double vwapDistAbs  = Math.abs(vwapDeltaPct);
+            int vwapPts = (int) Math.min(20, Math.max(0, (vwapDistAbs - 0.05) / 0.25 * 20));
             if (price > s.vwap) {
-                s.vwapScore = 15; longScore += 15;
-                reasoning.append(String.format("Prix>VWAP(+%.2f%%). ", vwapDeltaPct));
+                s.vwapScore = vwapPts; longScore += vwapPts;
+                reasoning.append(String.format("Prix>VWAP(%+.2f%%,%dpts). ", vwapDeltaPct, vwapPts));
             } else if (price < s.vwap) {
-                s.vwapScore = -15; shortScore += 15;
-                reasoning.append(String.format("Prix<VWAP(%.2f%%). ", vwapDeltaPct));
+                s.vwapScore = -vwapPts; shortScore += vwapPts;
+                reasoning.append(String.format("Prix<VWAP(%.2f%%,%dpts). ", vwapDeltaPct, vwapPts));
+            }
+
+            // ATR bonus — continuous linear function: 0 pts at 0.08%, 10 pts at ≥0.25%
+            // Applied symmetrically (better volatility = better scalping opportunity)
+            s.atrScore = (int) Math.min(10, Math.max(0, (s.atrPct - 0.08) / 0.17 * 10));
+            longScore  += s.atrScore;
+            shortScore += s.atrScore;
+            if (s.atrScore > 0) {
+                reasoning.append(String.format("Volatilité %.2f%%(%+dpts). ", s.atrPct, s.atrScore));
+            }
+
+            // Last candle body direction — confirms momentum (+5 pts)
+            boolean bullishBody = closes[n - 1] > candles.get(n - 1).open;
+            if (bullishBody) {
+                longScore  += 5; s.candleBodyScore = 5;
+                reasoning.append("Bougie haussière(+5pts). ");
+            } else {
+                shortScore += 5; s.candleBodyScore = -5;
+                reasoning.append("Bougie baissière(+5pts). ");
+            }
+
+            // Indicator conflict: RSI and EMA lean in opposite directions → dampen both
+            // Prevents a noise spike in one indicator from reaching the threshold alone
+            boolean rsiLeanLong = s.rsi7 < 50;
+            boolean emaLeanLong = price > s.ema13;
+            if (rsiLeanLong != emaLeanLong && Math.abs(s.rsiScore) >= 12 && Math.abs(s.emaScore) >= 10) {
+                int penalty = 10;
+                longScore  = Math.max(0, longScore  - penalty);
+                shortScore = Math.max(0, shortScore - penalty);
+                reasoning.append(String.format("⚠Conflit RSI/EMA(-%dpts). ", penalty));
             }
 
             // ── Direction decision ────────────────────────────────────────────
-            // Base threshold = 72 (was 65). Counter-trend trades require 85.
+            // Raised thresholds require more confluence to reduce false signals.
+            // Counter-trend trades need 92 pts (was 85) — very selective.
             boolean upTrend   = price > s.sma50_1m;
-            int longThreshold  = upTrend  ? 72 : 85; // easier to LONG with trend
-            int shortThreshold = !upTrend ? 72 : 85; // easier to SHORT with trend
+            int longThreshold  = upTrend  ? 78 : 92;
+            int shortThreshold = !upTrend ? 78 : 92;
             String trendNote   = upTrend ? "↑tendance SMA50" : "↓tendance SMA50";
 
             if (longScore >= longThreshold) {
