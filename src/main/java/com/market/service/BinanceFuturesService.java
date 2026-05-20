@@ -50,6 +50,11 @@ public class BinanceFuturesService {
     /** Cached hedge mode flag: true = Hedge Mode (dual), false = One-Way, null = not yet detected. */
     private volatile Boolean hedgeModeCache = null;
 
+    /** Clock offset (ms) = Binance server time − local System.currentTimeMillis(). */
+    private volatile long    timeOffset  = 0;
+    /** True once the first successful time sync has completed. */
+    private volatile boolean timeSynced  = false;
+
     public boolean isConfigured() {
         return !apiKey.isBlank() && !secret.isBlank();
     }
@@ -66,7 +71,7 @@ public class BinanceFuturesService {
     public boolean isHedgeMode() {
         if (hedgeModeCache != null) return hedgeModeCache;
         try {
-            String params = "timestamp=" + ts();
+            String params = "timestamp=" + ts() + "&recvWindow=10000";
             String json   = get("/fapi/v1/positionSide/dual", params + "&signature=" + sign(params));
             com.fasterxml.jackson.databind.JsonNode root =
                     new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
@@ -96,7 +101,7 @@ public class BinanceFuturesService {
      * @param leverage 1–125 (BTCUSDT max = 125)
      */
     public String setLeverage(String symbol, int leverage) throws Exception {
-        String params = "symbol=" + symbol + "&leverage=" + leverage + "&timestamp=" + ts();
+        String params = "symbol=" + symbol + "&leverage=" + leverage + tsSuffix();
         return post("/fapi/v1/leverage", params + "&signature=" + sign(params));
     }
 
@@ -116,7 +121,7 @@ public class BinanceFuturesService {
         if (positionSide != null && !positionSide.isBlank()) {
             params += "&positionSide=" + positionSide;
         }
-        params += "&timestamp=" + ts();
+        params += tsSuffix();
         return post("/fapi/v1/order", params + "&signature=" + sign(params));
     }
 
@@ -138,7 +143,7 @@ public class BinanceFuturesService {
         } else {
             params += "&reduceOnly=true";
         }
-        params += "&timestamp=" + ts();
+        params += tsSuffix();
         return post("/fapi/v1/order", params + "&signature=" + sign(params));
     }
 
@@ -165,7 +170,7 @@ public class BinanceFuturesService {
                                   double stopPrice, String quantity,
                                   String positionSide) throws Exception {
         String params = buildCloseOrderBody(symbol, side, type, stopPrice, quantity, positionSide);
-        params += "&timestamp=" + ts();
+        params += tsSuffix();
         return post("/fapi/v1/algoOrder", params + "&signature=" + sign(params));
     }
 
@@ -201,7 +206,7 @@ public class BinanceFuturesService {
      * Called before opening a new position to clean up stale orders.
      */
     public String cancelAllOrders(String symbol) throws Exception {
-        String params = "symbol=" + symbol + "&timestamp=" + ts();
+        String params = "symbol=" + symbol + tsSuffix();
         String result = delete("/fapi/v1/allOpenOrders", params + "&signature=" + sign(params));
         try {
             cancelAllAlgoOrders(symbol);
@@ -216,7 +221,7 @@ public class BinanceFuturesService {
      * Uses DELETE /fapi/v1/algoOpenOrders — a single bulk-cancel endpoint.
      */
     public void cancelAllAlgoOrders(String symbol) throws Exception {
-        String params = "symbol=" + symbol + "&timestamp=" + ts();
+        String params = "symbol=" + symbol + tsSuffix();
         delete("/fapi/v1/algoOpenOrders", params + "&signature=" + sign(params));
         LOG.debugf("[Futures] All algo orders cancelled for %s", symbol);
     }
@@ -226,7 +231,7 @@ public class BinanceFuturesService {
      * Each order has: orderId, type (STOP_MARKET, TAKE_PROFIT_MARKET...), side, stopPrice, status.
      */
     public String getOpenOrders(String symbol) throws Exception {
-        String params = "symbol=" + symbol + "&timestamp=" + ts();
+        String params = "symbol=" + symbol + tsSuffix();
         return get("/fapi/v1/openOrders", params + "&signature=" + sign(params));
     }
 
@@ -235,7 +240,7 @@ public class BinanceFuturesService {
      * GET /fapi/v1/algoOpenOrders
      */
     public String getOpenAlgoOrders(String symbol) throws Exception {
-        String params = "symbol=" + symbol + "&timestamp=" + ts();
+        String params = "symbol=" + symbol + tsSuffix();
         return get("/fapi/v1/openAlgoOrders", params + "&signature=" + sign(params));
     }
 
@@ -244,7 +249,7 @@ public class BinanceFuturesService {
      * positionAmt > 0 → long; < 0 → short; = 0 → no position.
      */
     public String getPositionRisk(String symbol) throws Exception {
-        String params = "symbol=" + symbol + "&timestamp=" + ts();
+        String params = "symbol=" + symbol + tsSuffix();
         return get("/fapi/v2/positionRisk", params + "&signature=" + sign(params));
     }
 
@@ -253,7 +258,7 @@ public class BinanceFuturesService {
      * Includes available balance and all current positions.
      */
     public String getAccount() throws Exception {
-        String params = "timestamp=" + ts();
+        String params = "timestamp=" + ts() + "&recvWindow=10000";
         return get("/fapi/v2/account", params + "&signature=" + sign(params));
     }
 
@@ -381,7 +386,14 @@ public class BinanceFuturesService {
         HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
         LOG.debugf("[Futures] %s → HTTP %d: %s", label, resp.statusCode(), resp.body());
         if (resp.statusCode() >= 400) {
-            throw new RuntimeException("Binance Futures " + resp.statusCode() + ": " + resp.body());
+            String body = resp.body();
+            if (body.contains("-1021")) {
+                // Timestamp out of recvWindow — force re-sync so next request succeeds
+                LOG.warnf("[Futures] ⚠ -1021 timestamp désynchronisé — re-synchro horloge");
+                timeSynced = false;
+                syncServerTime();
+            }
+            throw new RuntimeException("Binance Futures " + resp.statusCode() + ": " + body);
         }
         return resp.body();
     }
@@ -397,7 +409,50 @@ public class BinanceFuturesService {
         return sb.toString();
     }
 
+    /**
+     * Returns current timestamp corrected for clock drift vs Binance servers.
+     * Syncs lazily on first call via GET /fapi/v1/time.
+     */
     private long ts() {
-        return System.currentTimeMillis();
+        if (!timeSynced) syncServerTime();
+        return System.currentTimeMillis() + timeOffset;
+    }
+
+    /**
+     * Appends timestamp and recvWindow to signed request params.
+     * recvWindow=10000 gives a 10s window, protecting against minor clock drift
+     * between successive re-syncs.
+     */
+    private String tsSuffix() {
+        return "&timestamp=" + ts() + "&recvWindow=10000";
+    }
+
+    /**
+     * Fetches Binance server time (GET /fapi/v1/time) and computes the offset
+     * between the local clock and the Binance server clock.
+     * Called lazily on first signed request and again after any -1021 error.
+     */
+    public void syncServerTime() {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl() + "/fapi/v1/time"))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET().build();
+            long t0   = System.currentTimeMillis();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            long t1   = System.currentTimeMillis();
+            if (resp.statusCode() == 200) {
+                com.fasterxml.jackson.databind.JsonNode node =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(resp.body());
+                long serverTime = node.path("serverTime").asLong();
+                timeOffset = serverTime - (t0 + t1) / 2;
+                LOG.infof("[Futures] Horloge synchronisée: offset=%+dms (local≈%d, server=%d)",
+                    timeOffset, (t0 + t1) / 2, serverTime);
+            }
+        } catch (Exception e) {
+            LOG.warnf("[Futures] Synchro horloge échouée: %s — offset inchangé (%+dms)",
+                e.getMessage(), timeOffset);
+        }
+        timeSynced = true; // mark done even on failure to avoid hammering the endpoint
     }
 }

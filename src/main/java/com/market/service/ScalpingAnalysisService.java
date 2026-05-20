@@ -33,13 +33,13 @@ import java.util.stream.Collectors;
  *   5m EMA(9/21) bias — macro direction filter
  *
  * Filters:
- *   - TTM Squeeze (BB inside KC) → WAIT
- *   - ATR gate < 0.08% → WAIT
+ *   - TTM Squeeze (BB inside KC — compression vraie seulement) → WAIT
+ *   - ATR gate < 0.05% → WAIT
  *
  * TP/SL are ATR-based, very tight for scalping:
  *   TP1 = 0.5×ATR (60% qty), TP2 = 1.0×ATR (40% qty), SL = 0.4×ATR
  *
- * Signal: longScore/shortScore >= 78 (with-trend) / 92 (counter-trend SMA50)
+ * Signal: longScore/shortScore >= 55 (with-trend) / 72 (counter-trend SMA50)
  * Cache TTL: 10 seconds.
  */
 @ApplicationScoped
@@ -185,19 +185,21 @@ public class ScalpingAnalysisService {
                         : s.volumeDeltaPct < 48 ? "SELL" : "NEUTRAL";
             }
 
-            // ── TTM Squeeze gate (replaces old BB width < 0.18 check) ──────────
-            if (s.ttmSqueezeOn || "SQUEEZE".equals(s.bbState)) {
+            // ── TTM Squeeze gate — bloque uniquement la compression vraie (BB dans KC) ─
+            // Le bbState SQUEEZE seul (bbWidth<0.30%) est trop fréquent sur 1m et redondant
+            // avec l'ATR gate ; on ne bloque que le TTM Squeeze au sens strict.
+            if (s.ttmSqueezeOn) {
                 s.direction  = "WAIT";
                 s.confidence = 0;
                 s.reasoning  = String.format(
-                    "TTM SQUEEZE%s — marché comprimé (bbWidth=%.2f%%), pas de trade.",
-                    s.ttmSqueezeOn ? " (BB dans KC)" : "", s.bbWidth);
+                    "TTM SQUEEZE (BB dans KC) — compression, bbWidth=%.2f%%, pas de trade.",
+                    s.bbWidth);
                 s.candles    = candles.subList(Math.max(0, n - 100), n);
                 return s;
             }
 
-            // ── ATR gate (0.08% minimum volatility for scalping) ──────────────
-            if (s.atrPct < 0.08) {
+            // ── ATR gate (0.05% minimum — inclut sessions asiatiques 1m BTC) ────
+            if (s.atrPct < 0.05) {
                 s.direction  = "WAIT";
                 s.confidence = 0;
                 s.reasoning  = String.format(
@@ -496,9 +498,12 @@ public class ScalpingAnalysisService {
             }
 
             // ── Direction decision ────────────────────────────────────────────
+            // Seuils calibrés pour le régime 1m BTC :
+            //   55 avec tendance  (~3-4 indicateurs alignés)
+            //   72 contre tendance (~5+ indicateurs forts requis)
             boolean upTrend       = price > s.sma50_1m;
-            int longThreshold     = upTrend  ? 78 : 92;
-            int shortThreshold    = !upTrend ? 78 : 92;
+            int longThreshold     = upTrend  ? 55 : 72;
+            int shortThreshold    = !upTrend ? 55 : 72;
             String trendNote      = upTrend ? "↑SMA50" : "↓SMA50";
 
             if (longScore >= longThreshold) {
