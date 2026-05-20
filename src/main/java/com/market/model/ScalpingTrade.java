@@ -13,11 +13,12 @@ public class ScalpingTrade extends PanacheEntity {
     public String  direction;   // LONG | SHORT
     public double  entryPrice;
     public double  exitPrice;
-    public double  tpPrice;
+    public double  tpPrice;     // TP1 (60% of position, ATR-based)
+    public double  tp2Price;    // TP2 (40% of position, 1.0×ATR)
     public double  slPrice;
     public int     confidence;
     public double  pnl;
-    public String  status;      // OPEN | TP | SL | MANUAL
+    public String  status;      // OPEN | TP | TP2 | SL | MANUAL
 
     public Instant openedAt;
     public Instant closedAt;

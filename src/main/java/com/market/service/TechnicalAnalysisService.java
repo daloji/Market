@@ -356,6 +356,146 @@ public class TechnicalAnalysisService {
         return cumVol > 0 ? cumTPV / cumVol : closes[closes.length - 1];
     }
 
+    // ── Supertrend ────────────────────────────────────────────────────────────
+
+    /**
+     * Supertrend(period, multiplier) — ATR-based trailing stop / trend direction signal.
+     * One of the best scalping indicators: cleaner than EMA cross, fewer whipsaws.
+     *
+     * @param period     ATR smoothing period (7 for scalping)
+     * @param multiplier ATR band multiplier (3.0 standard)
+     * @return [direction, supertrendLine] — direction: +1.0 = LONG, -1.0 = SHORT
+     */
+    public double[] calculateSupertrend(double[] highs, double[] lows, double[] closes,
+                                        int period, double multiplier) {
+        int n = closes.length;
+        if (n < period + 2) return new double[]{1.0, closes[n - 1]};
+
+        // ATR (Wilder smoothing)
+        double[] atr = new double[n];
+        double sum = highs[0] - lows[0];
+        for (int i = 1; i < period; i++) {
+            sum += Math.max(highs[i] - lows[i],
+                   Math.max(Math.abs(highs[i] - closes[i - 1]),
+                            Math.abs(lows[i]  - closes[i - 1])));
+        }
+        atr[period - 1] = sum / period;
+        for (int i = period; i < n; i++) {
+            double tr = Math.max(highs[i] - lows[i],
+                        Math.max(Math.abs(highs[i] - closes[i - 1]),
+                                 Math.abs(lows[i]  - closes[i - 1])));
+            atr[i] = (atr[i - 1] * (period - 1) + tr) / period;
+        }
+
+        double[] finalUpper = new double[n];
+        double[] finalLower = new double[n];
+        double   dir        = 1.0;
+        double   st         = 0.0;
+
+        for (int i = period; i < n; i++) {
+            double hl2    = (highs[i] + lows[i]) / 2.0;
+            double bUpper = hl2 + multiplier * atr[i];
+            double bLower = hl2 - multiplier * atr[i];
+
+            // Bands only move in one direction unless price crosses them
+            if (i == period) {
+                finalUpper[i] = bUpper;
+                finalLower[i] = bLower;
+                dir = 1.0;
+                st  = finalLower[i];
+                continue;
+            }
+            finalUpper[i] = (bUpper < finalUpper[i - 1] || closes[i - 1] > finalUpper[i - 1])
+                            ? bUpper : finalUpper[i - 1];
+            finalLower[i] = (bLower > finalLower[i - 1] || closes[i - 1] < finalLower[i - 1])
+                            ? bLower : finalLower[i - 1];
+
+            double prevDir = dir;
+            if (prevDir == -1.0) {
+                dir = closes[i] > finalUpper[i] ? 1.0 : -1.0;
+            } else {
+                dir = closes[i] < finalLower[i] ? -1.0 : 1.0;
+            }
+            st = dir == 1.0 ? finalLower[i] : finalUpper[i];
+        }
+        return new double[]{dir, st};
+    }
+
+    // ── Keltner Channels ──────────────────────────────────────────────────────
+
+    /**
+     * Keltner Channels — EMA(period) ± multiplier × ATR(period).
+     * Used with Bollinger Bands for TTM Squeeze detection:
+     * when BB is inside KC → compression → no trade.
+     *
+     * @return [upper, middle(EMA), lower]
+     */
+    public double[] calculateKeltnerChannels(List<Double> closes, double[] highs, double[] lows,
+                                             int period, double atrMultiplier) {
+        double   ema      = calculateEMA(closes, period);
+        double[] closesArr = closes.stream().mapToDouble(Double::doubleValue).toArray();
+        double   atr      = computeATR(highs, lows, closesArr, period);
+        return new double[]{ema + atrMultiplier * atr, ema, ema - atrMultiplier * atr};
+    }
+
+    // ── VWAP with Standard Deviation Bands ───────────────────────────────────
+
+    /**
+     * VWAP with ±1σ and ±2σ volume-weighted standard deviation bands.
+     * Provides precise S/R levels: ±1σ = normal zone, ±2σ = extreme reversal/breakout.
+     *
+     * @return [vwap, sd1Upper, sd1Lower, sd2Upper, sd2Lower]
+     */
+    public double[] calculateVWAPWithBands(double[] highs, double[] lows, double[] closes,
+                                           double[] volumes) {
+        double cumTPV  = 0.0, cumVol = 0.0, cumTPV2 = 0.0;
+        for (int i = 0; i < closes.length; i++) {
+            double tp = (highs[i] + lows[i] + closes[i]) / 3.0;
+            cumTPV  += tp * volumes[i];
+            cumTPV2 += tp * tp * volumes[i];
+            cumVol  += volumes[i];
+        }
+        if (cumVol == 0) {
+            double p = closes[closes.length - 1];
+            return new double[]{p, p, p, p, p};
+        }
+        double vwap     = cumTPV / cumVol;
+        double variance = Math.max(0, cumTPV2 / cumVol - vwap * vwap);
+        double sd       = Math.sqrt(variance);
+        return new double[]{vwap, vwap + sd, vwap - sd, vwap + 2 * sd, vwap - 2 * sd};
+    }
+
+    // ── CVD (Cumulative Volume Delta) ─────────────────────────────────────────
+
+    /**
+     * Cumulative Volume Delta — running sum of (buyVol − sellVol).
+     * More informative than plain Volume Delta ratio: shows net accumulation/distribution.
+     * A CVD rising while price consolidates = bullish divergence (strong scalping signal).
+     *
+     * @param buyVolumes   taker buy base asset volumes
+     * @param totalVolumes total base asset volumes
+     * @param lookback     bars to compute slope over
+     * @return [cvdCurrent, cvdSlope, totalVolLookback]
+     *         slope = CVD[n-1] − CVD[n-1-lookback]; totalVol used for normalization
+     */
+    public double[] calculateCVD(double[] buyVolumes, double[] totalVolumes, int lookback) {
+        int n = buyVolumes.length;
+        if (n < 2) return new double[]{0, 0, 1};
+
+        double[] cvd = new double[n];
+        cvd[0] = 2 * buyVolumes[0] - totalVolumes[0];
+        for (int i = 1; i < n; i++) {
+            cvd[i] = cvd[i - 1] + (2 * buyVolumes[i] - totalVolumes[i]);
+        }
+
+        int    lb       = Math.min(lookback, n - 1);
+        double slope    = cvd[n - 1] - cvd[n - 1 - lb];
+        double totalVol = 0;
+        for (int i = n - lb; i < n; i++) totalVol += totalVolumes[i];
+
+        return new double[]{cvd[n - 1], slope, Math.max(1, totalVol)};
+    }
+
     // ── Market Structure ──────────────────────────────────────────────────────
 
     /**

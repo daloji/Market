@@ -67,12 +67,16 @@ public class BinanceScalpingTradeService {
     private volatile Instant lossStreakCoolUntil = null;
 
     // Active position tracking
-    private volatile String activeDir;
-    private volatile double activeSlPrice;
-    private volatile double activeTpPrice;
-    private volatile double activeQty;
-    private volatile double activeEntryPrice;
-    private volatile int    activeConf;
+    private volatile String  activeDir;
+    private volatile double  activeSlPrice;
+    private volatile double  activeTpPrice;   // TP1 (primary — 60% of position)
+    private volatile double  activeTp1Price;
+    private volatile double  activeTp2Price;  // secondary — 40% remaining
+    private volatile boolean activeTp1Hit;    // true once TP1 is reached
+    private volatile double  activeQty;
+    private volatile double  activeQty40;     // remaining qty after TP1 hit
+    private volatile double  activeEntryPrice;
+    private volatile int     activeConf;
     private volatile Instant activeOpenedAt;
 
     // Trade history (in-memory cache + DB persistence)
@@ -220,13 +224,51 @@ public class BinanceScalpingTradeService {
 
             boolean isLong = "LONG".equals(activeDir);
             boolean slHit  = isLong ? price <= activeSlPrice : price >= activeSlPrice;
-            boolean tpHit  = isLong ? price >= activeTpPrice : price <= activeTpPrice;
-            if (slHit || tpHit) {
-                return last(closePosition(slHit ? "SL" : "TP", price));
+
+            if (slHit) {
+                return last(closePosition("SL", price));
             }
-            return last(ScalpResult.skipped(
-                String.format("Position %s active @ %.1f — SL=%.1f TP=%.1f",
-                    activeDir, activeEntryPrice, activeSlPrice, activeTpPrice)));
+
+            // Double TP monitoring — falls back to legacy single-TP when activeTp2Price==0
+            // (backward compat: manual state injection via activeTpPrice without activeTp1/2Price)
+            double tp1Check = activeTp1Price > 0 ? activeTp1Price : activeTpPrice;
+            if (!activeTp1Hit && tp1Check > 0) {
+                boolean tp1Reached = isLong ? price >= tp1Check : price <= tp1Check;
+                if (tp1Reached) {
+                    if (activeTp2Price == 0) {
+                        // Legacy single-TP: close full position
+                        return last(closePosition("TP", price));
+                    }
+                    activeTp1Hit  = true;
+                    activeQty     = activeQty40;
+                    activeTpPrice = activeTp2Price;
+                    LOG.infof("[Scalping] TP1 @ %.1f atteint — 60%% fermé par Binance, suivi TP2 @ %.1f",
+                        tp1Check, activeTp2Price);
+                    return last(ScalpResult.skipped(String.format(
+                        "TP1 @ %.1f atteint — trailing 40%% vers TP2 @ %.1f",
+                        tp1Check, activeTp2Price)));
+                }
+            } else if (activeTp1Hit) {
+                boolean tp2Reached = isLong ? price >= activeTp2Price : price <= activeTp2Price;
+                if (tp2Reached) {
+                    return last(closePosition("TP2", price));
+                }
+            }
+
+            if (activeTp1Hit) {
+                return last(ScalpResult.skipped(String.format(
+                    "Position %s — TP1✅ trailing vers TP2=%.1f SL=%.1f",
+                    activeDir, activeTp2Price, activeSlPrice)));
+            }
+            double tp1Display = activeTp1Price > 0 ? activeTp1Price : activeTpPrice;
+            if (activeTp2Price > 0) {
+                return last(ScalpResult.skipped(String.format(
+                    "Position %s active @ %.1f — TP1=%.1f TP2=%.1f SL=%.1f",
+                    activeDir, activeEntryPrice, tp1Display, activeTp2Price, activeSlPrice)));
+            }
+            return last(ScalpResult.skipped(String.format(
+                "Position %s active @ %.1f — TP=%.1f SL=%.1f",
+                activeDir, activeEntryPrice, tp1Display, activeSlPrice)));
         }
 
         if (!enabled.get()) {
@@ -322,16 +364,26 @@ public class BinanceScalpingTradeService {
         double qty       = Math.max(0.001, Math.floor(rawQty * 1000) / 1000.0);
         String qtyStr    = String.format(Locale.US, "%.3f", qty);
 
-        String entrySide = "LONG".equals(dir) ? "BUY"  : "SELL";
-        String closeSide = "LONG".equals(dir) ? "SELL" : "BUY";
+        String  entrySide = "LONG".equals(dir) ? "BUY"  : "SELL";
+        String  closeSide = "LONG".equals(dir) ? "SELL" : "BUY";
         boolean hedgeMode = futuresService.isHedgeMode();
         String  posSide   = hedgeMode ? dir : null;
 
-        // TP / SL prices
-        double tpPrice = "LONG".equals(dir)
-            ? r1(entry * (1 + tp / 100)) : r1(entry * (1 - tp / 100));
-        double slPrice = "LONG".equals(dir)
+        // TP / SL prices — prefer ATR-based TP from signal (more precise than % config)
+        double tp1Price = (sig.tp1 > 0)
+            ? sig.tp1
+            : ("LONG".equals(dir) ? r1(entry * (1 + tp / 100)) : r1(entry * (1 - tp / 100)));
+        double tp2Price = (sig.tp2 > 0)
+            ? sig.tp2
+            : ("LONG".equals(dir) ? r1(entry * (1 + 2 * tp / 100)) : r1(entry * (1 - 2 * tp / 100)));
+        double slPrice  = "LONG".equals(dir)
             ? r1(entry * (1 - sl / 100)) : r1(entry * (1 + sl / 100));
+
+        // Split qty: 60% for TP1, 40% for TP2
+        double qty60 = Math.max(0.001, Math.floor(qty * 0.6 * 1000) / 1000.0);
+        double qty40 = Math.max(0.001, Math.floor((qty - qty60) * 1000) / 1000.0);
+        String qty60Str = String.format(Locale.US, "%.3f", qty60);
+        String qty40Str = String.format(Locale.US, "%.3f", qty40);
 
         StringBuilder log = new StringBuilder();
         log.append(String.format("[Scalping] %s @ %.2f conf=%d%% — ", dir, entry, sig.confidence));
@@ -350,15 +402,17 @@ public class BinanceScalpingTradeService {
             LOG.infof("[Scalping] Market order placé: %s", orderJson);
 
             // Recalculate SL/TP on filled price
-            tpPrice = "LONG".equals(dir)
-                ? r1(filledPx * (1 + tp / 100)) : r1(filledPx * (1 - tp / 100));
+            tp1Price = (sig.tp1 > 0) ? sig.tp1
+                : ("LONG".equals(dir) ? r1(filledPx * (1 + tp / 100)) : r1(filledPx * (1 - tp / 100)));
+            tp2Price = (sig.tp2 > 0) ? sig.tp2
+                : ("LONG".equals(dir) ? r1(filledPx * (1 + 2 * tp / 100)) : r1(filledPx * (1 - 2 * tp / 100)));
             slPrice = "LONG".equals(dir)
                 ? r1(filledPx * (1 - sl / 100)) : r1(filledPx * (1 + sl / 100));
 
             // Wait for Binance to register the position before placing SL/TP
             try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
 
-            // 4. SL
+            // 4. SL (full qty — reduces as TPs fill)
             String slStatus;
             try {
                 String slResp = futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", slPrice, qtyStr, posSide);
@@ -369,23 +423,38 @@ public class BinanceScalpingTradeService {
                 slStatus = "⚠ SL " + String.format(Locale.US, "%.1f", slPrice) + " | " + e.getMessage();
             }
 
-            // 5. TP
-            String tpStatus;
+            // 5a. TP1 (60% of qty)
+            String tp1Status;
             try {
-                String tpResp = futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tpPrice, qtyStr, posSide);
-                LOG.infof("[Scalping] TP order réponse: %s", tpResp);
-                tpStatus = "✅ TP " + String.format(Locale.US, "%.1f", tpPrice);
+                String tp1Resp = futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp1Price, qty60Str, posSide);
+                LOG.infof("[Scalping] TP1 order réponse: %s", tp1Resp);
+                tp1Status = "✅ TP1 " + String.format(Locale.US, "%.1f", tp1Price);
             } catch (Exception e) {
-                LOG.warnf("[Scalping] TP Binance échoué: %s", e.getMessage());
-                tpStatus = "⚠ TP " + String.format(Locale.US, "%.1f", tpPrice) + " | " + e.getMessage();
+                LOG.warnf("[Scalping] TP1 Binance échoué: %s", e.getMessage());
+                tp1Status = "⚠ TP1 " + String.format(Locale.US, "%.1f", tp1Price) + " | " + e.getMessage();
+            }
+
+            // 5b. TP2 (40% of qty)
+            String tp2Status;
+            try {
+                String tp2Resp = futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp2Price, qty40Str, posSide);
+                LOG.infof("[Scalping] TP2 order réponse: %s", tp2Resp);
+                tp2Status = "✅ TP2 " + String.format(Locale.US, "%.1f", tp2Price);
+            } catch (Exception e) {
+                LOG.warnf("[Scalping] TP2 Binance échoué: %s", e.getMessage());
+                tp2Status = "⚠ TP2 " + String.format(Locale.US, "%.1f", tp2Price) + " | " + e.getMessage();
             }
 
             // 6. Activate internal tracking
             activeDir        = dir;
             activeEntryPrice = filledPx;
             activeSlPrice    = slPrice;
-            activeTpPrice    = tpPrice;
+            activeTp1Price   = tp1Price;
+            activeTp2Price   = tp2Price;
+            activeTpPrice    = tp1Price;  // primary target for internal monitor
+            activeTp1Hit     = false;
             activeQty        = qty;
+            activeQty40      = qty40;
             activeConf       = sig.confidence;
             activeOpenedAt   = Instant.now();
 
@@ -393,7 +462,8 @@ public class BinanceScalpingTradeService {
             ScalpTrade trade = new ScalpTrade();
             trade.direction  = dir;
             trade.entryPrice = filledPx;
-            trade.tpPrice    = tpPrice;
+            trade.tpPrice    = tp1Price;
+            trade.tp2Price   = tp2Price;
             trade.slPrice    = slPrice;
             trade.confidence = sig.confidence;
             trade.openedAt   = activeOpenedAt;
@@ -402,11 +472,12 @@ public class BinanceScalpingTradeService {
             tradeHistory.addLast(trade);
             if (tradeHistory.size() > MAX_HISTORY) tradeHistory.pollFirst();
 
-            String summary = String.format("%s @ %.1f | %s | %s", dir, filledPx, slStatus, tpStatus);
+            String summary = String.format("%s @ %.1f | %s | %s | %s",
+                dir, filledPx, slStatus, tp1Status, tp2Status);
             LOG.infof("[Scalping] %s", summary);
-            telegramService.sendScalpingAlert(dir, filledPx, tpPrice, slPrice, sig.confidence);
+            telegramService.sendScalpingAlert(dir, filledPx, tp1Price, slPrice, sig.confidence);
 
-            return ScalpResult.placed(dir, sig.confidence, filledPx, tpPrice, slPrice, summary);
+            return ScalpResult.placed(dir, sig.confidence, filledPx, tp1Price, slPrice, summary);
 
         } catch (Exception e) {
             LOG.errorf("[Scalping] ❌ Erreur trade: %s", e.getMessage());
@@ -475,6 +546,7 @@ public class BinanceScalpingTradeService {
         e.direction  = t.direction;
         e.entryPrice = t.entryPrice;
         e.tpPrice    = t.tpPrice;
+        e.tp2Price   = t.tp2Price;
         e.slPrice    = t.slPrice;
         e.confidence = t.confidence;
         e.openedAt   = t.openedAt;
@@ -499,7 +571,11 @@ public class BinanceScalpingTradeService {
         activeEntryPrice = 0;
         activeSlPrice    = 0;
         activeTpPrice    = 0;
+        activeTp1Price   = 0;
+        activeTp2Price   = 0;
+        activeTp1Hit     = false;
         activeQty        = 0;
+        activeQty40      = 0;
         activeConf       = 0;
         activeOpenedAt   = null;
     }
@@ -575,8 +651,12 @@ public class BinanceScalpingTradeService {
         m.put("tpPct",         getTpPct());
         m.put("slPct",         getSlPct());
         m.put("activeDir",     activeDir);
+        double tp1Disp = activeTp1Price > 0 ? activeTp1Price : activeTpPrice;
         m.put("activeEntry",   activeDir != null ? activeEntryPrice : null);
-        m.put("activeTp",      activeDir != null ? activeTpPrice    : null);
+        m.put("activeTp",      activeDir != null ? tp1Disp         : null);  // backward compat
+        m.put("activeTp1",     activeDir != null ? activeTp1Price   : null);
+        m.put("activeTp2",     activeDir != null ? activeTp2Price   : null);
+        m.put("activeTp1Hit",  activeDir != null ? activeTp1Hit     : null);
         m.put("activeSl",      activeDir != null ? activeSlPrice    : null);
         m.put("activeQty",     activeDir != null ? activeQty        : null);
         m.put("activeConf",    activeDir != null ? activeConf       : null);
@@ -805,11 +885,12 @@ public class BinanceScalpingTradeService {
         public String  direction;
         public double  entryPrice;
         public double  exitPrice;
-        public double  tpPrice;
+        public double  tpPrice;     // TP1 (60% of position)
+        public double  tp2Price;    // TP2 (40% of position)
         public double  slPrice;
         public int     confidence;
         public double  pnl;
-        public String  status;   // "OPEN" | "TP" | "SL" | "MANUAL"
+        public String  status;   // "OPEN" | "TP" | "TP2" | "SL" | "MANUAL"
         public Instant openedAt;
         public Instant closedAt;
     }
