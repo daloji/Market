@@ -147,15 +147,18 @@ public class BinanceFuturesService {
      * Uses the Algo Order API (POST /fapi/v1/algoOrder) with algoType=CONDITIONAL,
      * as required by Binance since STOP_MARKET / TAKE_PROFIT_MARKET are no longer
      * accepted on /fapi/v1/order (error -4120).
-     * One-Way mode: uses closePosition=true (Binance recommended — closes full position, no quantity needed).
-     * Hedge Mode: uses positionSide=LONG/SHORT + explicit quantity (closePosition not available).
+     *
+     * One-Way mode:
+     *   - STOP_MARKET   → closePosition=true  (closes full remaining position — safe for SL after partial TPs)
+     *   - TAKE_PROFIT_MARKET → reduceOnly=true + explicit quantity (enables partial closes for TP1/TP2)
+     * Hedge Mode: positionSide=LONG/SHORT + explicit quantity (closePosition not available).
      * Uses workingType=MARK_PRICE to avoid wick-triggered stops.
      *
      * @param symbol       e.g. "BTCUSDT"
      * @param side         "SELL" (to close a LONG), "BUY" (to close a SHORT)
      * @param type         "STOP_MARKET" or "TAKE_PROFIT_MARKET"
      * @param stopPrice    trigger price (1 decimal place for BTCUSDT)
-     * @param quantity     BTC quantity — only used in Hedge Mode
+     * @param quantity     BTC quantity — used in Hedge Mode and for One-Way TP partial closes
      * @param positionSide "LONG" or "SHORT" for Hedge Mode; null for One-Way mode
      */
     public String placeCloseOrder(String symbol, String side, String type,
@@ -181,9 +184,12 @@ public class BinanceFuturesService {
             // Hedge Mode: quantity + positionSide required
             params += "&quantity=" + quantity
                     + "&positionSide=" + positionSide;
-        } else {
-            // One-Way mode: closePosition=true closes the full position automatically
+        } else if ("STOP_MARKET".equals(type)) {
+            // One-Way SL: closePosition=true closes whatever remains after partial TP fills
             params += "&closePosition=true";
+        } else {
+            // One-Way TP: reduceOnly=true with explicit partial quantity (TP1=60%, TP2=40%)
+            params += "&quantity=" + quantity + "&reduceOnly=true";
         }
         params += "&workingType=MARK_PRICE";
         return params;

@@ -114,14 +114,16 @@ class BinanceFuturesServiceTest {
     }
 
     @Test
-    void buildCloseOrderBody_oneWayMode_doesNotContainLegacyParams() {
+    void buildCloseOrderBody_oneWayMode_takeProfitUsesReduceOnlyWithQuantity() {
         BinanceFuturesService s = new BinanceFuturesService();
         String body = s.buildCloseOrderBody("BTCUSDT", "BUY", "TAKE_PROFIT_MARKET", 105000.0, "0.002", null);
 
-        assertFalse(body.contains("orderType="), "Must NOT use orderType= parameter");
-        assertFalse(body.contains("stopPrice="),  "Must NOT use legacy stopPrice= parameter");
-        assertFalse(body.contains("positionSide"), "One-Way mode must NOT include positionSide");
-        assertFalse(body.contains("quantity="),    "One-Way mode must NOT include explicit quantity");
+        assertFalse(body.contains("orderType="),     "Must NOT use orderType= parameter");
+        assertFalse(body.contains("stopPrice="),     "Must NOT use legacy stopPrice= parameter");
+        assertFalse(body.contains("positionSide"),   "One-Way mode must NOT include positionSide");
+        assertFalse(body.contains("closePosition"),  "One-Way TP must NOT use closePosition (partial close)");
+        assertTrue(body.contains("quantity=0.002"),  "One-Way TP must include explicit quantity for partial close");
+        assertTrue(body.contains("reduceOnly=true"), "One-Way TP must use reduceOnly=true");
     }
 
     @Test
@@ -174,15 +176,20 @@ class BinanceFuturesServiceTest {
     }
 
     @Test
-    void buildCloseOrderBody_stopMarketAndTakeProfitMarket_differOnlyOnOrderType() {
+    void buildCloseOrderBody_oneWayMode_slAndTpUseDifferentCloseStrategies() {
         BinanceFuturesService s = new BinanceFuturesService();
         String sl = s.buildCloseOrderBody("BTCUSDT", "BUY", "STOP_MARKET",        96000.0, "0.002", null);
         String tp = s.buildCloseOrderBody("BTCUSDT", "BUY", "TAKE_PROFIT_MARKET", 96000.0, "0.002", null);
 
         assertTrue(sl.contains("&type=STOP_MARKET"),        "SL must use STOP_MARKET");
         assertTrue(tp.contains("&type=TAKE_PROFIT_MARKET"), "TP must use TAKE_PROFIT_MARKET");
-        // Everything else should be identical
-        assertEquals(sl.replace("STOP_MARKET", "TAKE_PROFIT_MARKET"), tp);
+        // SL uses closePosition=true (closes full remaining position)
+        assertTrue(sl.contains("closePosition=true"),  "One-Way SL must use closePosition=true");
+        assertFalse(sl.contains("reduceOnly"),          "One-Way SL must NOT use reduceOnly");
+        // TP uses reduceOnly=true + quantity (partial close for TP1/TP2 split)
+        assertTrue(tp.contains("reduceOnly=true"),      "One-Way TP must use reduceOnly=true");
+        assertTrue(tp.contains("quantity=0.002"),        "One-Way TP must include explicit quantity");
+        assertFalse(tp.contains("closePosition"),        "One-Way TP must NOT use closePosition");
     }
 }
 

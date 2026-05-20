@@ -75,6 +75,7 @@ public class BinanceScalpingTradeService {
     private volatile boolean activeTp1Hit;    // true once TP1 is reached
     private volatile double  activeQty;
     private volatile double  activeQty40;     // remaining qty after TP1 hit
+    private volatile double  activeTp1Pnl;   // PnL locked in at TP1 partial close
     private volatile double  activeEntryPrice;
     private volatile int     activeConf;
     private volatile Instant activeOpenedAt;
@@ -229,24 +230,16 @@ public class BinanceScalpingTradeService {
                 return last(closePosition("SL", price));
             }
 
-            // Double TP monitoring — falls back to legacy single-TP when activeTp2Price==0
-            // (backward compat: manual state injection via activeTpPrice without activeTp1/2Price)
+            // TP monitoring — Java sends market orders (avoids Binance OCO cancellation of TP2).
+            // Falls back to legacy single-TP when activeTp2Price==0.
             double tp1Check = activeTp1Price > 0 ? activeTp1Price : activeTpPrice;
             if (!activeTp1Hit && tp1Check > 0) {
                 boolean tp1Reached = isLong ? price >= tp1Check : price <= tp1Check;
                 if (tp1Reached) {
                     if (activeTp2Price == 0) {
-                        // Legacy single-TP: close full position
                         return last(closePosition("TP", price));
                     }
-                    activeTp1Hit  = true;
-                    activeQty     = activeQty40;
-                    activeTpPrice = activeTp2Price;
-                    LOG.infof("[Scalping] TP1 @ %.1f atteint — 60%% fermé par Binance, suivi TP2 @ %.1f",
-                        tp1Check, activeTp2Price);
-                    return last(ScalpResult.skipped(String.format(
-                        "TP1 @ %.1f atteint — trailing 40%% vers TP2 @ %.1f",
-                        tp1Check, activeTp2Price)));
+                    return last(closePartial(price));
                 }
             } else if (activeTp1Hit) {
                 boolean tp2Reached = isLong ? price >= activeTp2Price : price <= activeTp2Price;
@@ -379,11 +372,9 @@ public class BinanceScalpingTradeService {
         double slPrice  = "LONG".equals(dir)
             ? r1(entry * (1 - sl / 100)) : r1(entry * (1 + sl / 100));
 
-        // Split qty: 60% for TP1, 40% for TP2
+        // Split qty for internal TP tracking: 60% at TP1, 40% at TP2
         double qty60 = Math.max(0.001, Math.floor(qty * 0.6 * 1000) / 1000.0);
         double qty40 = Math.max(0.001, Math.floor((qty - qty60) * 1000) / 1000.0);
-        String qty60Str = String.format(Locale.US, "%.3f", qty60);
-        String qty40Str = String.format(Locale.US, "%.3f", qty40);
 
         StringBuilder log = new StringBuilder();
         log.append(String.format("[Scalping] %s @ %.2f conf=%d%% — ", dir, entry, sig.confidence));
@@ -423,27 +414,9 @@ public class BinanceScalpingTradeService {
                 slStatus = "⚠ SL " + String.format(Locale.US, "%.1f", slPrice) + " | " + e.getMessage();
             }
 
-            // 5a. TP1 (60% of qty)
-            String tp1Status;
-            try {
-                String tp1Resp = futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp1Price, qty60Str, posSide);
-                LOG.infof("[Scalping] TP1 order réponse: %s", tp1Resp);
-                tp1Status = "✅ TP1 " + String.format(Locale.US, "%.1f", tp1Price);
-            } catch (Exception e) {
-                LOG.warnf("[Scalping] TP1 Binance échoué: %s", e.getMessage());
-                tp1Status = "⚠ TP1 " + String.format(Locale.US, "%.1f", tp1Price) + " | " + e.getMessage();
-            }
-
-            // 5b. TP2 (40% of qty)
-            String tp2Status;
-            try {
-                String tp2Resp = futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp2Price, qty40Str, posSide);
-                LOG.infof("[Scalping] TP2 order réponse: %s", tp2Resp);
-                tp2Status = "✅ TP2 " + String.format(Locale.US, "%.1f", tp2Price);
-            } catch (Exception e) {
-                LOG.warnf("[Scalping] TP2 Binance échoué: %s", e.getMessage());
-                tp2Status = "⚠ TP2 " + String.format(Locale.US, "%.1f", tp2Price) + " | " + e.getMessage();
-            }
+            // 5. TP1/TP2 are managed by Java monitoring (closeWithMarket) — no Binance algo orders.
+            //    Binance OCO would cancel TP2 when TP1 fires; Java side-steps this by sending
+            //    explicit partial market orders at each TP level.
 
             // 6. Activate internal tracking
             activeDir        = dir;
@@ -453,6 +426,7 @@ public class BinanceScalpingTradeService {
             activeTp2Price   = tp2Price;
             activeTpPrice    = tp1Price;  // primary target for internal monitor
             activeTp1Hit     = false;
+            activeTp1Pnl     = 0;
             activeQty        = qty;
             activeQty40      = qty40;
             activeConf       = sig.confidence;
@@ -472,8 +446,8 @@ public class BinanceScalpingTradeService {
             tradeHistory.addLast(trade);
             if (tradeHistory.size() > MAX_HISTORY) tradeHistory.pollFirst();
 
-            String summary = String.format("%s @ %.1f | %s | %s | %s",
-                dir, filledPx, slStatus, tp1Status, tp2Status);
+            String summary = String.format("%s @ %.1f | %s | TP1=%.1f TP2=%.1f (Java)",
+                dir, filledPx, slStatus, tp1Price, tp2Price);
             LOG.infof("[Scalping] %s", summary);
             telegramService.sendScalpingAlert(dir, filledPx, tp1Price, slPrice, sig.confidence);
 
@@ -483,6 +457,38 @@ public class BinanceScalpingTradeService {
             LOG.errorf("[Scalping] ❌ Erreur trade: %s", e.getMessage());
             return ScalpResult.error("Erreur trade: " + e.getMessage());
         }
+    }
+
+    /** Partially closes 60% of position at TP1 via market order; keeps 40% tracking for TP2. */
+    private ScalpResult closePartial(double price) {
+        boolean isLong = "LONG".equals(activeDir);
+        double  qty60  = activeQty - activeQty40;
+        String  closeSide = isLong ? "SELL" : "BUY";
+        String  qtyStr    = String.format(Locale.US, "%.3f", qty60);
+        String  posSide   = futuresService.isHedgeMode() ? activeDir : null;
+        try {
+            futuresService.closeWithMarket("BTCUSDT", closeSide, qtyStr, posSide);
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            if (msg.contains("-2022") || msg.contains("-4003")) {
+                LOG.infof("[Scalping] TP1 déjà fermé côté Binance (%s @ %.2f) — code: %s",
+                    activeDir, price, msg.contains("-2022") ? "-2022" : "-4003");
+            } else {
+                LOG.errorf("[Scalping] ❌ TP1 fermeture partielle échouée: %s", msg);
+                return ScalpResult.error("TP1 fermeture partielle échouée: " + msg);
+            }
+        }
+        activeTp1Pnl = isLong
+            ? (price - activeEntryPrice) * qty60
+            : (activeEntryPrice - price) * qty60;
+        LOG.infof("[Scalping] TP1 %s @ %.2f (%.3f BTC, PnL=%.2f$) — trailing 40%% vers TP2=%.1f",
+            activeDir, price, qty60, activeTp1Pnl, activeTp2Price);
+        telegramService.sendCloseAlert(activeDir, "TP1 scalping", price, activeTp1Pnl);
+        activeTp1Hit  = true;
+        activeQty     = activeQty40;
+        activeTpPrice = activeTp2Price;
+        return ScalpResult.skipped(String.format(
+            "TP1 @ %.1f — trailing 40%% vers TP2 @ %.1f", price, activeTp2Price));
     }
 
     private ScalpResult closePosition(String reason, double price) {
@@ -503,9 +509,11 @@ public class BinanceScalpingTradeService {
                 return ScalpResult.error("Fermeture échouée: " + msg);
             }
         }
-        double pnl = "LONG".equals(activeDir)
+        // Include PnL from TP1 partial close (activeTp1Pnl=0 for full-position closes)
+        double pnl = ("LONG".equals(activeDir)
             ? (price - activeEntryPrice) * activeQty
-            : (activeEntryPrice - price) * activeQty;
+            : (activeEntryPrice - price) * activeQty)
+            + activeTp1Pnl;
         String msg = String.format("[Scalping] %s %s @ %.2f (entrée %.2f, PnL=%.2f$)",
             reason, activeDir, price, activeEntryPrice, pnl);
         LOG.info(msg);
@@ -574,35 +582,73 @@ public class BinanceScalpingTradeService {
         activeTp1Price   = 0;
         activeTp2Price   = 0;
         activeTp1Hit     = false;
+        activeTp1Pnl     = 0;
         activeQty        = 0;
         activeQty40      = 0;
         activeConf       = 0;
         activeOpenedAt   = null;
     }
 
-    /** Called when Binance no longer has the position (closed by algo TP/SL, liquidation, etc.). */
+    /**
+     * Infers which order triggered the close based on exit price vs known TP/SL levels.
+     * Used when Binance closes the position asynchronously before the Java monitor cycle sees it.
+     * 0.05% tolerance accounts for slippage and mark-price vs last-price differences.
+     */
+    private String inferCloseReason(double price) {
+        boolean isLong = "LONG".equals(activeDir);
+        double tp1 = activeTp1Price > 0 ? activeTp1Price : activeTpPrice;
+        double tp2 = activeTp2Price;
+        double sl  = activeSlPrice;
+        double tol = price * 0.0005;
+
+        if (activeTp1Hit) {
+            // TP1 already done — remaining position closed by TP2 or SL
+            if (tp2 > 0 && (isLong ? price >= tp2 - tol : price <= tp2 + tol)) return "TP2";
+            if (sl  > 0 && (isLong ? price <= sl  + tol : price >= sl  - tol)) return "SL";
+        } else {
+            if (tp1 > 0 && (isLong ? price >= tp1 - tol : price <= tp1 + tol)) return "TP";
+            if (sl  > 0 && (isLong ? price <= sl  + tol : price >= sl  - tol)) return "SL";
+        }
+        return "EXT_CLOSE";
+    }
+
+    /** Called when Binance no longer has the position (SL algo fired, liquidation, external close). */
     private ScalpResult reconcileClosedPosition(double price) {
-        LOG.infof("[Scalping] ⚡ Position %s @ %.1f fermée côté Binance (TP/SL algo / externe) — sync interne",
-            activeDir, activeEntryPrice);
-        double pnl = "LONG".equals(activeDir)
+        String reason = inferCloseReason(price);
+        LOG.infof("[Scalping] ⚡ Position %s @ %.1f fermée côté Binance → %s",
+            activeDir, activeEntryPrice, reason);
+        // Include PnL from TP1 partial close if it already happened before SL
+        double pnl = ("LONG".equals(activeDir)
             ? (price - activeEntryPrice) * activeQty
-            : (activeEntryPrice - price) * activeQty;
-        telegramService.sendCloseAlert(activeDir, "EXT_CLOSE scalping", price, pnl);
+            : (activeEntryPrice - price) * activeQty)
+            + activeTp1Pnl;
+        telegramService.sendCloseAlert(activeDir, reason + " scalping", price, pnl);
         for (ScalpTrade t : tradeHistory) {
             if ("OPEN".equals(t.status) && t.direction.equals(activeDir)) {
                 t.exitPrice = price;
                 t.pnl       = pnl;
                 t.closedAt  = Instant.now();
-                t.status    = "EXT_CLOSE";
+                t.status    = reason;
                 updateTrade(t);
                 break;
             }
         }
         lastTradeAt = Instant.now();
-        consecutiveLosses = 0;
-        lossStreakCoolUntil = null;
+        if ("SL".equals(reason)) {
+            consecutiveLosses++;
+            if (consecutiveLosses >= LOSS_STREAK_LIMIT) {
+                lossStreakCoolUntil = Instant.now().plusMillis(LOSS_STREAK_COOL_MS);
+                LOG.warnf("[Scalping] ⚠ %d SL consécutifs — pause de 30 min (reprise: %s)",
+                    consecutiveLosses, lossStreakCoolUntil);
+                telegramService.sendCloseAlert(activeDir,
+                    String.format("PAUSE %d SL consécutifs", consecutiveLosses), price, pnl);
+            }
+        } else {
+            consecutiveLosses = 0;
+            lossStreakCoolUntil = null;
+        }
         clearActive();
-        return ScalpResult.closed("EXT_CLOSE", price, pnl);
+        return ScalpResult.closed(reason, price, pnl);
     }
 
     /**

@@ -65,6 +65,7 @@ class BinanceScalpingTradeServiceTest {
         setField(real, "activeTp1Price",   0.0);
         setField(real, "activeTp2Price",   0.0);
         setField(real, "activeTp1Hit",     false);
+        setField(real, "activeTp1Pnl",    0.0);
         setField(real, "activeQty",        0.0);
         setField(real, "activeQty40",      0.0);
         setField(real, "consecutiveLosses", 0);
@@ -218,19 +219,16 @@ class BinanceScalpingTradeServiceTest {
         assertEquals("placed", r.status);
         assertEquals("LONG",   r.direction);
 
-        // Capture the three placeCloseOrder calls: SL + TP1 (60%) + TP2 (40%)
+        // Only SL is placed on Binance — TP1/TP2 are managed by Java monitoring
         ArgumentCaptor<String> typeCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> sideCaptor = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(3))
+        verify(futuresService, times(1))
                 .placeCloseOrder(eq("BTCUSDT"), sideCaptor.capture(), typeCaptor.capture(),
                                  anyDouble(), any(), isNull());
 
-        // SL: STOP_MARKET SELL, TP1+TP2: TAKE_PROFIT_MARKET SELL
-        assertTrue(typeCaptor.getAllValues().contains("STOP_MARKET"),        "SL must be STOP_MARKET");
-        assertTrue(typeCaptor.getAllValues().contains("TAKE_PROFIT_MARKET"), "TP must be TAKE_PROFIT_MARKET");
-        // All close orders are SELL for LONG
-        assertTrue(sideCaptor.getAllValues().stream().allMatch("SELL"::equals),
-                   "All SL/TP close sides must be SELL for a LONG position");
+        assertEquals("STOP_MARKET", typeCaptor.getValue(), "Only SL STOP_MARKET placed on Binance");
+        assertEquals("SELL",        sideCaptor.getValue(), "SL close side must be SELL for LONG");
+        verify(futuresService, never()).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
     }
 
     @Test
@@ -240,18 +238,11 @@ class BinanceScalpingTradeServiceTest {
         svc.checkAndTrade();
 
         ArgumentCaptor<Double> priceCaptor = ArgumentCaptor.forClass(Double.class);
-        ArgumentCaptor<String> typeCaptor  = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(3))
-                .placeCloseOrder(any(), any(), typeCaptor.capture(), priceCaptor.capture(), any(), any());
+        verify(futuresService, times(1))
+                .placeCloseOrder(any(), any(), eq("STOP_MARKET"), priceCaptor.capture(), any(), any());
 
-        int slIdx = typeCaptor.getAllValues().indexOf("STOP_MARKET");
-        int tpIdx = typeCaptor.getAllValues().indexOf("TAKE_PROFIT_MARKET"); // first TP (TP1)
-
-        double slPrice = priceCaptor.getAllValues().get(slIdx);
-        double tpPrice = priceCaptor.getAllValues().get(tpIdx);
-
+        double slPrice = priceCaptor.getValue();
         assertTrue(slPrice < 100_000.0, "SL must be below entry for LONG: " + slPrice);
-        assertTrue(tpPrice > 100_000.0, "TP1 must be above entry for LONG: " + tpPrice);
     }
 
     // ── SHORT trade: SL = STOP_MARKET BUY, TP = TAKE_PROFIT_MARKET BUY ───────
@@ -268,15 +259,13 @@ class BinanceScalpingTradeServiceTest {
 
         ArgumentCaptor<String> typeCaptor = ArgumentCaptor.forClass(String.class);
         ArgumentCaptor<String> sideCaptor = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(3))
+        verify(futuresService, times(1))
                 .placeCloseOrder(eq("BTCUSDT"), sideCaptor.capture(), typeCaptor.capture(),
                                  anyDouble(), any(), isNull());
 
-        assertTrue(typeCaptor.getAllValues().contains("STOP_MARKET"),        "SL must be STOP_MARKET");
-        assertTrue(typeCaptor.getAllValues().contains("TAKE_PROFIT_MARKET"), "TP must be TAKE_PROFIT_MARKET");
-        // All close orders are BUY for SHORT
-        assertTrue(sideCaptor.getAllValues().stream().allMatch("BUY"::equals),
-                   "All SL/TP close sides must be BUY for a SHORT position");
+        assertEquals("STOP_MARKET", typeCaptor.getValue(), "Only SL STOP_MARKET placed on Binance");
+        assertEquals("BUY",         sideCaptor.getValue(), "SL close side must be BUY for SHORT");
+        verify(futuresService, never()).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
     }
 
     @Test
@@ -286,18 +275,11 @@ class BinanceScalpingTradeServiceTest {
         svc.checkAndTrade();
 
         ArgumentCaptor<Double> priceCaptor = ArgumentCaptor.forClass(Double.class);
-        ArgumentCaptor<String> typeCaptor  = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(3))
-                .placeCloseOrder(any(), any(), typeCaptor.capture(), priceCaptor.capture(), any(), any());
+        verify(futuresService, times(1))
+                .placeCloseOrder(any(), any(), eq("STOP_MARKET"), priceCaptor.capture(), any(), any());
 
-        int slIdx = typeCaptor.getAllValues().indexOf("STOP_MARKET");
-        int tpIdx = typeCaptor.getAllValues().indexOf("TAKE_PROFIT_MARKET"); // first TP (TP1)
-
-        double slPrice = priceCaptor.getAllValues().get(slIdx);
-        double tpPrice = priceCaptor.getAllValues().get(tpIdx);
-
+        double slPrice = priceCaptor.getValue();
         assertTrue(slPrice > 100_000.0, "SL must be above entry for SHORT: " + slPrice);
-        assertTrue(tpPrice < 100_000.0, "TP1 must be below entry for SHORT: " + tpPrice);
     }
 
     // ── cancelAllOrders called before market entry ────────────────────────────
@@ -317,40 +299,81 @@ class BinanceScalpingTradeServiceTest {
     // ── SL / TP failure resilience ────────────────────────────────────────────
 
     @Test
-    void checkAndTrade_slOrderFails_tpStillPlacedAndTradeTracked() throws Exception {
+    void checkAndTrade_slOrderFails_tradeStillTracked() throws Exception {
         svc.enable();
         when(scalpingService.getSignal()).thenReturn(longSignal(80));
         when(futuresService.placeCloseOrder(any(), any(), eq("STOP_MARKET"), anyDouble(), any(), any()))
                 .thenThrow(new RuntimeException("Binance Futures 400: -4120 algo error"));
-        when(futuresService.placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any()))
-                .thenReturn("{\"algoId\":5678}");
 
         BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
 
         // Trade is still "placed" even when SL fails
         assertEquals("placed", r.status, "Trade should be placed even if SL order fails");
-        assertTrue(r.message.contains("SL"),   "Result message should mention SL");
-        // Both TP1 and TP2 were still attempted
-        verify(futuresService, times(2)).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+        assertTrue(r.message.contains("SL"), "Result message should mention SL");
+        // No TAKE_PROFIT_MARKET orders placed on Binance — TP is Java-managed
+        verify(futuresService, never()).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
     }
 
     @Test
-    void checkAndTrade_tpOrderFails_tradeStillTracked() throws Exception {
+    void checkAndTrade_tp1JavaMonitor_longPositionTp1Hit_closesPartialAndSkips() throws Exception {
         svc.enable();
-        when(scalpingService.getSignal()).thenReturn(longSignal(80));
-        when(futuresService.placeCloseOrder(any(), any(), eq("STOP_MARKET"), anyDouble(), any(), any()))
-                .thenReturn("{\"algoId\":1234}");
-        when(futuresService.placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any()))
-                .thenThrow(new RuntimeException("Binance Futures 400: TP error"));
+        BinanceScalpingTradeService real = realBean();
+        setField(real, "activeDir",        "LONG");
+        setField(real, "activeEntryPrice", 100_000.0);
+        setField(real, "activeTp1Price",   100_300.0);
+        setField(real, "activeTp2Price",   100_600.0);
+        setField(real, "activeSlPrice",     99_850.0);
+        setField(real, "activeQty",            0.003);
+        setField(real, "activeQty40",          0.001);
+
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.003\"}]");
+
+        ScalpingSignal tp1 = new ScalpingSignal();
+        tp1.currentPrice = 100_350.0; // above TP1
+        when(scalpingService.getSignal()).thenReturn(tp1);
 
         BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
 
-        assertEquals("placed", r.status, "Trade should be placed even if TP order fails");
-        assertTrue(r.message.contains("TP"), "Result message should mention TP");
+        // TP1 fires a partial market close, returns "skipped" to keep monitoring for TP2
+        assertEquals("skipped", r.status, "TP1 partial close should return skipped");
+        assertTrue(r.message.contains("TP1"), "Message must mention TP1");
+        // Java sends market close for 60% (qty60 = 0.003 - 0.001 = 0.002)
+        verify(futuresService).closeWithMarket(eq("BTCUSDT"), eq("SELL"), eq("0.002"), isNull());
+        // activeTp1Hit must be set
+        assertTrue((Boolean) getField(real, "activeTp1Hit"), "activeTp1Hit must be true after TP1");
     }
 
     @Test
-    void checkAndTrade_bothSlAndTpFail_tradeStillTracked() throws Exception {
+    void checkAndTrade_tp2JavaMonitor_longPositionTp2Hit_closesRemainder() throws Exception {
+        svc.enable();
+        BinanceScalpingTradeService real = realBean();
+        setField(real, "activeDir",        "LONG");
+        setField(real, "activeEntryPrice", 100_000.0);
+        setField(real, "activeTp2Price",   100_600.0);
+        setField(real, "activeSlPrice",     99_850.0);
+        setField(real, "activeQty",            0.001);  // already at 40% after TP1
+        setField(real, "activeTp1Hit",         true);
+        setField(real, "activeTp1Pnl",        0.40);   // simulated TP1 locked-in PnL
+
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.001\"}]");
+
+        ScalpingSignal tp2 = new ScalpingSignal();
+        tp2.currentPrice = 100_650.0; // above TP2
+        when(scalpingService.getSignal()).thenReturn(tp2);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("closed", r.status, "TP2 should fully close position");
+        assertEquals("TP2",    r.message);
+        // Total PnL = (100_650 - 100_000) * 0.001 + 0.40 (TP1) = 0.65 + 0.40 = 1.05 approx
+        assertTrue(r.pnl > 0.9, "Total PnL (TP1+TP2) should accumulate: " + r.pnl);
+        assertNull(getField(real, "activeDir"), "Active position must be cleared after TP2");
+    }
+
+    @Test
+    void checkAndTrade_slFails_tradeStillTracked() throws Exception {
         svc.enable();
         when(scalpingService.getSignal()).thenReturn(longSignal(80));
         when(futuresService.placeCloseOrder(any(), any(), any(), anyDouble(), any(), any()))
@@ -358,7 +381,7 @@ class BinanceScalpingTradeServiceTest {
 
         BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
 
-        assertEquals("placed", r.status, "Trade result must be 'placed' even when both SL and TP fail");
+        assertEquals("placed", r.status, "Trade result must be 'placed' even when SL Binance order fails");
     }
 
     // ── Hedge mode: positionSide forwarded correctly ──────────────────────────
@@ -372,11 +395,11 @@ class BinanceScalpingTradeServiceTest {
         svc.checkAndTrade();
 
         ArgumentCaptor<String> posSideCaptor = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(3))
+        verify(futuresService, times(1))
                 .placeCloseOrder(any(), any(), any(), anyDouble(), any(), posSideCaptor.capture());
 
-        assertTrue(posSideCaptor.getAllValues().stream().allMatch("LONG"::equals),
-                   "Hedge mode close orders must carry positionSide=LONG");
+        assertEquals("LONG", posSideCaptor.getValue(),
+                   "Hedge mode SL order must carry positionSide=LONG");
     }
 
     @Test
@@ -388,11 +411,11 @@ class BinanceScalpingTradeServiceTest {
         svc.checkAndTrade();
 
         ArgumentCaptor<String> posSideCaptor = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(3))
+        verify(futuresService, times(1))
                 .placeCloseOrder(any(), any(), any(), anyDouble(), any(), posSideCaptor.capture());
 
-        assertTrue(posSideCaptor.getAllValues().stream().allMatch(v -> v == null),
-                   "One-Way mode close orders must have positionSide=null");
+        assertNull(posSideCaptor.getValue(),
+                   "One-Way mode SL order must have positionSide=null");
     }
 
     // ── closePosition: -4003 (qty=0) treated as already-closed ──────────────
