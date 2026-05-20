@@ -195,8 +195,29 @@ public class BinanceScalpingTradeService {
 
         double price = sig.currentPrice;
 
-        // ── Monitor active position (internal SL/TP) ──────────────────────────
+        // ── Monitor active position ───────────────────────────────────────────
         if (activeDir != null) {
+            // Always verify Binance still holds the position — detects external closes
+            // (TP/SL algo orders, liquidation, manual close on Binance UI)
+            try {
+                String posJson = futuresService.getPositionRisk("BTCUSDT");
+                com.fasterxml.jackson.databind.JsonNode arr =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(posJson);
+                boolean binanceHasPos = false;
+                if (arr.isArray()) {
+                    for (com.fasterxml.jackson.databind.JsonNode n : arr) {
+                        if (Math.abs(n.path("positionAmt").asDouble(0)) > 0.0001) {
+                            binanceHasPos = true; break;
+                        }
+                    }
+                }
+                if (!binanceHasPos) {
+                    return last(reconcileClosedPosition(price));
+                }
+            } catch (Exception ex) {
+                LOG.warnf("[Scalping] Vérif Binance position échouée: %s — surveillance interne maintenue", ex.getMessage());
+            }
+
             boolean isLong = "LONG".equals(activeDir);
             boolean slHit  = isLong ? price <= activeSlPrice : price >= activeSlPrice;
             boolean tpHit  = isLong ? price >= activeTpPrice : price <= activeTpPrice;
@@ -481,6 +502,67 @@ public class BinanceScalpingTradeService {
         activeQty        = 0;
         activeConf       = 0;
         activeOpenedAt   = null;
+    }
+
+    /** Called when Binance no longer has the position (closed by algo TP/SL, liquidation, etc.). */
+    private ScalpResult reconcileClosedPosition(double price) {
+        LOG.infof("[Scalping] ⚡ Position %s @ %.1f fermée côté Binance (TP/SL algo / externe) — sync interne",
+            activeDir, activeEntryPrice);
+        double pnl = "LONG".equals(activeDir)
+            ? (price - activeEntryPrice) * activeQty
+            : (activeEntryPrice - price) * activeQty;
+        telegramService.sendCloseAlert(activeDir, "EXT_CLOSE scalping", price, pnl);
+        for (ScalpTrade t : tradeHistory) {
+            if ("OPEN".equals(t.status) && t.direction.equals(activeDir)) {
+                t.exitPrice = price;
+                t.pnl       = pnl;
+                t.closedAt  = Instant.now();
+                t.status    = "EXT_CLOSE";
+                updateTrade(t);
+                break;
+            }
+        }
+        lastTradeAt = Instant.now();
+        consecutiveLosses = 0;
+        lossStreakCoolUntil = null;
+        clearActive();
+        return ScalpResult.closed("EXT_CLOSE", price, pnl);
+    }
+
+    /**
+     * Manually reconcile internal state with Binance.
+     * Call via POST /api/scalping/sync when a position appears stuck open in the UI.
+     */
+    public ScalpResult syncWithBinance() {
+        if (activeDir == null) {
+            return ScalpResult.skipped("Aucune position active à synchroniser");
+        }
+        if (!futuresService.isConfigured()) {
+            return ScalpResult.error("Binance API non configurée");
+        }
+        ScalpingSignal sig = scalpingService.getSignal();
+        double price = (sig != null && sig.currentPrice > 0) ? sig.currentPrice : activeEntryPrice;
+        try {
+            String posJson = futuresService.getPositionRisk("BTCUSDT");
+            com.fasterxml.jackson.databind.JsonNode arr =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(posJson);
+            boolean binanceHasPos = false;
+            if (arr.isArray()) {
+                for (com.fasterxml.jackson.databind.JsonNode n : arr) {
+                    if (Math.abs(n.path("positionAmt").asDouble(0)) > 0.0001) {
+                        binanceHasPos = true; break;
+                    }
+                }
+            }
+            if (!binanceHasPos) {
+                return reconcileClosedPosition(price);
+            }
+            return ScalpResult.skipped(
+                String.format("Position %s confirmée sur Binance (qty=%.4f) — aucune sync nécessaire",
+                    activeDir, activeQty));
+        } catch (Exception ex) {
+            return ScalpResult.error("Impossible de vérifier Binance: " + ex.getMessage());
+        }
     }
 
     public Map<String, Object> statusMap() {

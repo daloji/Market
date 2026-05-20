@@ -59,6 +59,17 @@ public class ScalpingResource {
     }
 
     /**
+     * Reconcile internal position state with Binance.
+     * Use when a trade appears stuck as "open" in the UI but was already closed on Binance.
+     * POST /api/scalping/sync
+     */
+    @POST @Path("/sync")
+    public Response sync() {
+        BinanceScalpingTradeService.ScalpResult result = scalping.syncWithBinance();
+        return Response.ok(result).build();
+    }
+
+    /**
      * Force-places a trade in the given direction regardless of signal/cooldown.
      * For testing only — bypasses all gates.
      * POST /api/scalping/force/LONG  or  POST /api/scalping/force/SHORT

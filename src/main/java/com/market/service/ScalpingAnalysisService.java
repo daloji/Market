@@ -149,7 +149,7 @@ public class ScalpingAnalysisService {
             double[] bb = ta.calculateBollingerBands(closeList, 20);
             double bbUpper = bb[0], bbMid = bb[1], bbLower = bb[2];
             s.bbWidth = r2((bbUpper - bbLower) / bbMid * 100);
-            s.bbState = s.bbWidth < 0.3 ? "SQUEEZE" : s.bbWidth > 1.0 ? "EXPANSION" : "NORMAL";
+            s.bbState = s.bbWidth < 0.18 ? "SQUEEZE" : s.bbWidth > 1.0 ? "EXPANSION" : "NORMAL";
 
             // ── Bollinger SQUEEZE gate — no trade when market is flat ─────────
             if ("SQUEEZE".equals(s.bbState)) {
@@ -161,7 +161,7 @@ public class ScalpingAnalysisService {
             }
 
             // ── ATR gate — no trade when market is too quiet ──────────────────
-            if (s.atrPct < 0.08) {
+            if (s.atrPct <= 0.04) {
                 s.direction  = "WAIT";
                 s.confidence = 0;
                 s.reasoning  = String.format("ATR trop bas (%.2f%%) — volatilité insuffisante pour scalper.", s.atrPct);
@@ -354,9 +354,9 @@ public class ScalpingAnalysisService {
                 }
             }
 
-            // ATR bonus — continuous linear function: 0 pts at 0.08%, 10 pts at ≥0.25%
+            // ATR bonus — continuous linear function: 0 pts at 0.04%, 10 pts at ≥0.25%
             // Applied symmetrically (better volatility = better scalping opportunity)
-            s.atrScore = (int) Math.min(10, Math.max(0, (s.atrPct - 0.08) / 0.17 * 10));
+            s.atrScore = (int) Math.min(10, Math.max(0, (s.atrPct - 0.04) / 0.21 * 10));
             longScore  += s.atrScore;
             shortScore += s.atrScore;
             if (s.atrScore > 0) {

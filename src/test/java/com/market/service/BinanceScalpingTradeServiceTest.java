@@ -407,6 +407,9 @@ class BinanceScalpingTradeServiceTest {
         doThrow(new RuntimeException("Binance Futures 400: {\"code\":-4003,\"msg\":\"Quantity less than or equal to zero.\"}"))
                 .when(futuresService).closeWithMarket(any(), any(), any(), any());
 
+        // Binance confirms position still open (needed for new position check in checkAndTrade)
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.002\"}]");
+
         // Price drops to SL level
         ScalpingSignal sl = new ScalpingSignal();
         sl.direction    = "LONG";
@@ -436,6 +439,9 @@ class BinanceScalpingTradeServiceTest {
         doThrow(new RuntimeException("Binance Futures 400: {\"code\":-2022,\"msg\":\"ReduceOnly Order is rejected.\"}"))
                 .when(futuresService).closeWithMarket(any(), any(), any(), any());
 
+        // Binance confirms position still open
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.002\"}]");
+
         ScalpingSignal sl = new ScalpingSignal();
         sl.direction    = "SHORT";
         sl.confidence   = 80;
@@ -463,6 +469,9 @@ class BinanceScalpingTradeServiceTest {
 
         when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
 
+        // Binance confirms position still open (needed before internal TP check)
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.002\"}]");
+
         ScalpingSignal tp = new ScalpingSignal();
         tp.direction    = "LONG";
         tp.confidence   = 80;
@@ -489,6 +498,9 @@ class BinanceScalpingTradeServiceTest {
 
         when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
 
+        // Binance confirms position still open (needed before internal TP check)
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.002\"}]");
+
         ScalpingSignal tp = new ScalpingSignal();
         tp.direction    = "SHORT";
         tp.confidence   = 80;
@@ -513,6 +525,9 @@ class BinanceScalpingTradeServiceTest {
         setField(real, "activeTpPrice",    100_300.0);
         setField(real, "activeSlPrice",     99_850.0);
         setField(real, "activeQty",            0.002);
+
+        // Binance confirms position still open
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.002\"}]");
 
         ScalpingSignal mid = new ScalpingSignal();
         mid.direction    = "LONG";
