@@ -45,11 +45,12 @@ public class BinanceAutoTradeService {
     /** Number of consecutive confirmed cycles required before placing a trade (anti-faux-retournement). */
     private static final int REQUIRED_CONFIRMATIONS = 2;
 
-    @Inject CryptoAnalysisService analysisService;
-    @Inject BinanceFuturesService  futuresService;
-    @Inject TradeService           tradeService;
-    @Inject SignalHistoryService   signalHistoryService;
-    @Inject TelegramAlertService   telegramAlertService;
+    @Inject CryptoAnalysisService   analysisService;
+    @Inject BinanceFuturesService   futuresService;
+    @Inject TradeService            tradeService;
+    @Inject SignalHistoryService    signalHistoryService;
+    @Inject TelegramAlertService    telegramAlertService;
+    @Inject BinanceTradeCoordinator coordinator;
 
     // Default config from application.properties
     @ConfigProperty(name = "market.binance.futures.auto-trade.min-confidence", defaultValue = "70")
@@ -180,8 +181,9 @@ public class BinanceAutoTradeService {
             return;
         }
 
-        // 4. Restore active tracking state
+        // 4. Restore active tracking state and re-acquire coordinator lock
         boolean isLong = t.direction == Trade.Direction.LONG;
+        coordinator.forceAcquire(BinanceTradeCoordinator.Owner.AUTO_TRADE);
         activeDir       = isLong ? "LONG" : "SHORT";
         activeSlPrice   = t.sl;
         activeTp1Price  = t.tp1;
@@ -430,8 +432,10 @@ public class BinanceAutoTradeService {
         // (pas de activeDir mais une position existe) pour que le monitoring SL/TP interne
         // couvre la dernière position.
         try {
-            if (hasOpenPosition() && activeDir == null) {
+            if (hasOpenPosition() && activeDir == null
+                    && coordinator.isFreeOrOwnedBy(BinanceTradeCoordinator.Owner.AUTO_TRADE)) {
                 // Orphan position: init local SL/TP tracking from configured percentages
+                // (skipped if scalping owns the position — avoids shadowing scalping's SL/TP)
                 double entry = signal.currentPrice;
                 double slP   = getSlPct();
                 double tpP   = getTpPct();
@@ -478,6 +482,13 @@ public class BinanceAutoTradeService {
             AutoTradeResult r = AutoTradeResult.skipped(
                 dir + " confirmation " + consecutiveSameDir + "/" + REQUIRED_CONFIRMATIONS
                 + " — attente " + REQUIRED_CONFIRMATIONS + " signaux consécutifs (anti-faux-retournement)");
+            signalHistoryService.record(signal, false, r.message);
+            return store(r);
+        }
+
+        // ── Coordinator: block if scalping holds the lock ─────────────────────
+        if (!coordinator.tryAcquire(BinanceTradeCoordinator.Owner.AUTO_TRADE)) {
+            AutoTradeResult r = AutoTradeResult.skipped("Scalping actif — trade classique en attente de clôture");
             signalHistoryService.record(signal, false, r.message);
             return store(r);
         }
@@ -785,6 +796,7 @@ public class BinanceAutoTradeService {
     }
 
     private void clearActiveState() {
+        coordinator.release(BinanceTradeCoordinator.Owner.AUTO_TRADE);
         activeDir       = null;
         activeSlPrice   = 0;
         activeTp1Price  = 0;
@@ -818,21 +830,29 @@ public class BinanceAutoTradeService {
         int    lev_   = getLeverage();
         double amt_   = getAmountUsdt();
 
-        // BTC quantity = (margin × leverage) / price, minimum 0.001 BTC
+        // BTC quantity — floor to Binance lot size (0.001 BTC step) to avoid overshoot on TP split
         double rawQty  = (amt_ * lev_) / entry;
-        double totalQt = Math.max(0.001, rawQty);
-        // Split position into 3 TP layers: tp1Ratio / tp2Ratio / remainder
+        double totalQt = Math.max(0.001, Math.floor(rawQty * 1000) / 1000.0);
+        String qty     = String.format(Locale.US, "%.3f", totalQt);
+
+        // Split into up to 3 TP layers whose sum == totalQt.
+        // Fallback: fewer TPs when position too small to split (Binance min lot = 0.001 BTC).
         double tp1Ratio = defaultTp1Ratio > 0 ? defaultTp1Ratio : 0.40;
         double tp2Ratio = defaultTp2Ratio > 0 ? defaultTp2Ratio : 0.35;
-        double tp3Ratio = Math.max(0.05, 1.0 - tp1Ratio - tp2Ratio);
-        // Partial quantities per TP (min 0.001 BTC each, rounded to 3 dp)
-        double qty1d = Math.max(0.001, Math.floor(totalQt * tp1Ratio * 1000) / 1000);
-        double qty2d = Math.max(0.001, Math.floor(totalQt * tp2Ratio * 1000) / 1000);
-        double qty3d = Math.max(0.001, Math.round((totalQt - qty1d - qty2d) * 1000) / 1000.0);
-        String qty   = String.format(Locale.US, "%.3f", totalQt);
-        String qty1  = String.format(Locale.US, "%.3f", qty1d);
-        String qty2  = String.format(Locale.US, "%.3f", qty2d);
-        String qty3  = String.format(Locale.US, "%.3f", qty3d);
+        double qty1d, qty2d, qty3d;
+        if (totalQt < 0.002) {
+            qty1d = totalQt; qty2d = 0; qty3d = 0;          // single TP
+        } else if (totalQt < 0.003) {
+            qty1d = 0.001; qty2d = totalQt - 0.001; qty3d = 0; // two TPs
+        } else {
+            qty1d = Math.max(0.001, Math.floor(totalQt * tp1Ratio * 1000) / 1000.0);
+            qty2d = Math.max(0.001, Math.floor(totalQt * tp2Ratio * 1000) / 1000.0);
+            qty3d = Math.round((totalQt - qty1d - qty2d) * 1000) / 1000.0;
+            if (qty3d < 0.001) { qty2d = Math.round((qty2d + qty3d) * 1000) / 1000.0; qty3d = 0; }
+        }
+        String qty1 = qty1d > 0 ? String.format(Locale.US, "%.3f", qty1d) : null;
+        String qty2 = qty2d > 0 ? String.format(Locale.US, "%.3f", qty2d) : null;
+        String qty3 = qty3d > 0 ? String.format(Locale.US, "%.3f", qty3d) : null;
 
         double sl  = signal.stopLoss;
         double tp1 = signal.tp1;
@@ -911,6 +931,7 @@ public class BinanceAutoTradeService {
             }
 
             // 5. TP1 / TP2 / TP3 sur Binance (partial quantities, best-effort)
+            // qty2/qty3 may be null when position too small to split into 3 lots.
             int tpPlaced = 0;
             try {
                 futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp1, qty1, posSide);
@@ -921,7 +942,7 @@ public class BinanceAutoTradeService {
                 LOG.warnf("[AutoTrade] TP1 Binance échoué (%s)", e.getMessage());
                 log.append("TP1 interne @ ").append(String.format(Locale.US, "%.1f", tp1)).append(". ");
             }
-            try {
+            if (qty2 != null) try {
                 futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp2, qty2, posSide);
                 log.append("TP2 @ ").append(String.format(Locale.US, "%.1f", tp2))
                    .append(" (").append(qty2).append(" BTC). ");
@@ -930,7 +951,7 @@ public class BinanceAutoTradeService {
                 LOG.warnf("[AutoTrade] TP2 Binance échoué (%s)", e.getMessage());
                 log.append("TP2 interne @ ").append(String.format(Locale.US, "%.1f", tp2)).append(". ");
             }
-            try {
+            if (qty3 != null) try {
                 futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp3, qty3, posSide);
                 log.append("TP3 @ ").append(String.format(Locale.US, "%.1f", tp3))
                    .append(" (").append(qty3).append(" BTC). ");
@@ -972,8 +993,8 @@ public class BinanceAutoTradeService {
             activeDir      = dir;
             activeSlPrice  = sl;
             activeTp1Price = tp1;
-            activeTp2Price = tp2;
-            activeTp3Price = tp3;
+            activeTp2Price = qty2 != null ? tp2 : 0;  // 0 disables Java-side TP2 monitoring
+            activeTp3Price = qty3 != null ? tp3 : 0;  // 0 disables Java-side TP3 monitoring
             activeQty      = filledQty;
 
             // 8. Persist trade in local database (with actual BTC quantity)

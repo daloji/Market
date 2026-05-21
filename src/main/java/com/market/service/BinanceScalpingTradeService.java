@@ -46,9 +46,10 @@ public class BinanceScalpingTradeService {
     private static final double DEFAULT_SL_PCT   = 0.15;
     private static final int    DEFAULT_MIN_CONF = 65;
 
-    @Inject ScalpingAnalysisService scalpingService;
-    @Inject BinanceFuturesService   futuresService;
-    @Inject TelegramAlertService    telegramService;
+    @Inject ScalpingAnalysisService  scalpingService;
+    @Inject BinanceFuturesService    futuresService;
+    @Inject TelegramAlertService     telegramService;
+    @Inject BinanceTradeCoordinator  coordinator;
 
     // ── Runtime state ─────────────────────────────────────────────────────────
     private final AtomicBoolean           enabled  = new AtomicBoolean(false);
@@ -142,6 +143,7 @@ public class BinanceScalpingTradeService {
                 activeOpenedAt   = open.openedAt;
                 activeQty        = binanceQty;
                 activeConf       = open.confidence;
+                coordinator.forceAcquire(BinanceTradeCoordinator.Owner.SCALPING);
                 LOG.infof("[Scalping] Position active restaurée depuis DB: %s @ %.1f (qty=%.4f)",
                     activeDir, activeEntryPrice, activeQty);
             } else {
@@ -297,6 +299,11 @@ public class BinanceScalpingTradeService {
                 String.format("Confiance insuffisante: %d < %d", sig.confidence, getMinConfidence())));
         }
 
+        // ── Coordinator: block if auto-trade holds the lock ───────────────────
+        if (!coordinator.tryAcquire(BinanceTradeCoordinator.Owner.SCALPING)) {
+            return last(ScalpResult.skipped("Trade classique actif — scalping en attente de clôture"));
+        }
+
         // ── Check no existing position ────────────────────────────────────────
         try {
             String posJson = futuresService.getPositionRisk("BTCUSDT");
@@ -305,6 +312,7 @@ public class BinanceScalpingTradeService {
             if (arr.isArray()) {
                 for (com.fasterxml.jackson.databind.JsonNode n : arr) {
                     if (Math.abs(n.path("positionAmt").asDouble(0)) > 0.0001) {
+                        coordinator.release(BinanceTradeCoordinator.Owner.SCALPING);
                         return last(ScalpResult.skipped("Position Binance déjà ouverte"));
                     }
                 }
@@ -611,6 +619,7 @@ public class BinanceScalpingTradeService {
     }
 
     private void clearActive() {
+        coordinator.release(BinanceTradeCoordinator.Owner.SCALPING);
         activeDir        = null;
         activeEntryPrice = 0;
         activeSlPrice    = 0;
@@ -783,6 +792,9 @@ public class BinanceScalpingTradeService {
                                ? activeOpenedAt.toString() : null);
         m.put("lastResult",    lastResult != null ? lastResult : Map.of());
         m.put("consecutiveLosses", consecutiveLosses);
+        BinanceTradeCoordinator.Owner coordOwner = coordinator.getOwner();
+        m.put("coordinatorOwner", coordOwner != null ? coordOwner.name() : null);
+        m.put("coordinatorBlocked", coordOwner != null && coordOwner != BinanceTradeCoordinator.Owner.SCALPING);
         if (lossStreakCoolUntil != null && Instant.now().isBefore(lossStreakCoolUntil))
             m.put("lossStreakCooldown", Math.max(0,
                 lossStreakCoolUntil.toEpochMilli() - Instant.now().toEpochMilli()) / 1000);

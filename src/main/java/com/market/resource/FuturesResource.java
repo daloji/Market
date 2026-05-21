@@ -3,6 +3,7 @@ package com.market.resource;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.market.model.Trade;
+import com.market.service.BinanceTradeCoordinator;
 import com.market.service.BinanceAutoTradeService;
 import com.market.service.BinanceFuturesService;
 import jakarta.inject.Inject;
@@ -28,8 +29,9 @@ import java.util.*;
 @Consumes(MediaType.APPLICATION_JSON)
 public class FuturesResource {
 
-    @Inject BinanceAutoTradeService autoTrade;
-    @Inject BinanceFuturesService   futures;
+    @Inject BinanceAutoTradeService  autoTrade;
+    @Inject BinanceFuturesService    futures;
+    @Inject BinanceTradeCoordinator  coordinator;
 
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -47,6 +49,9 @@ public class FuturesResource {
         body.put("slPct",         autoTrade.getSlPct());
         body.put("tpPct",         autoTrade.getTpPct());
         body.put("lastResult",    autoTrade.lastResult() != null ? autoTrade.lastResult() : Map.of());
+        BinanceTradeCoordinator.Owner coordOwner = coordinator.getOwner();
+        body.put("coordinatorOwner",   coordOwner != null ? coordOwner.name() : null);
+        body.put("coordinatorBlocked", coordOwner != null && coordOwner != BinanceTradeCoordinator.Owner.AUTO_TRADE);
         return Response.ok(body).build();
     }
 
