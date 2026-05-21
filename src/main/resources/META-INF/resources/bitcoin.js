@@ -2295,7 +2295,7 @@ function renderScalpingHistory(trades) {
   trades.forEach(t => {
     if (t.status === 'OPEN') { opens++; return; }
     totalPnl += (t.pnl || 0);
-    if (t.status === 'TP') wins++;
+    if (t.status && t.status.startsWith('TP')) wins++;
     else if (t.status === 'SL') losses++;
   });
   const closed   = wins + losses;
@@ -2315,10 +2315,11 @@ function renderScalpingHistory(trades) {
   }
 
   const STATUS_BADGE = {
-    'TP':     `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP</span>`,
-    'SL':     `<span style="background:#3a1a1a;color:var(--red);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🔴 SL</span>`,
-    'OPEN':   `<span style="background:#2a2400;color:var(--accent);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏳ OUVERT</span>`,
-    'MANUAL': `<span style="background:#1e1e2a;color:#8b8bcc;padding:2px 8px;border-radius:4px;font-size:11px">✋ MANUEL</span>`,
+    'TP':       `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP</span>`,
+    'TP1+TP2': `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP1+TP2</span>`,
+    'SL':       `<span style="background:#3a1a1a;color:var(--red);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🔴 SL</span>`,
+    'OPEN':     `<span style="background:#2a2400;color:var(--accent);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏳ OUVERT</span>`,
+    'MANUAL':   `<span style="background:#1e1e2a;color:#8b8bcc;padding:2px 8px;border-radius:4px;font-size:11px">✋ MANUEL</span>`,
   };
 
   let html = `<table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -2340,7 +2341,7 @@ function renderScalpingHistory(trades) {
 
   for (const t of trades) {
     const isOpen   = t.status === 'OPEN';
-    const isTp     = t.status === 'TP';
+    const isTp     = t.status && t.status.startsWith('TP');
     const dirColor = t.direction === 'LONG' ? 'var(--green)' : 'var(--red)';
     const pnlColor = (t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
     const dateFmt  = t.openedAt ? new Date(t.openedAt).toLocaleString('fr-FR', {dateStyle:'short', timeStyle:'short'}) : '—';

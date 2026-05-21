@@ -22,6 +22,8 @@ public class ScalpingTrade extends PanacheEntity {
 
     public Instant openedAt;
     public Instant closedAt;
+    public boolean tp1Hit;   // true when TP1 partial close was executed
+    public double  tp1Pnl;  // PnL captured at TP1 (60% of position)
 
     // ── Finders ────────────────────────────────────────────────────────────────
 

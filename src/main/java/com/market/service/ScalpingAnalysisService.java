@@ -198,12 +198,13 @@ public class ScalpingAnalysisService {
                 return s;
             }
 
-            // ── ATR gate (0.05% minimum — inclut sessions asiatiques 1m BTC) ────
-            if (s.atrPct < 0.05) {
+            // ── ATR gate (0.15% minimum — en dessous les frais Binance dépassent les gains ATR-based) ─
+            if (s.atrPct < 0.15) {
                 s.direction  = "WAIT";
                 s.confidence = 0;
                 s.reasoning  = String.format(
-                    "ATR trop bas (%.2f%%) — volatilité insuffisante pour scalper.", s.atrPct);
+                    "ATR trop bas (%.2f%%) — frais 0.10%% > profit TP brut (0.7×ATR=%.2f%%).",
+                    s.atrPct, 0.7 * s.atrPct);
                 s.candles    = candles.subList(Math.max(0, n - 100), n);
                 return s;
             }
@@ -524,19 +525,20 @@ public class ScalpingAnalysisService {
             }
 
             // ── TP1 / TP2 / SL (ATR-based, tight for scalping) ───────────────
+            // TP1=1×ATR, TP2=2×ATR, SL=0.5×ATR → gross 1.4×ATR > frais 0.10% notional
             double atr = s.atr;
             if ("LONG".equals(s.direction)) {
-                s.tp1      = r1(price + 0.5 * atr);
-                s.tp2      = r1(price + 1.0 * atr);
-                s.stopLoss = r1(price - 0.4 * atr);
+                s.tp1      = r1(price + 1.0 * atr);
+                s.tp2      = r1(price + 2.0 * atr);
+                s.stopLoss = r1(price - 0.5 * atr);
             } else if ("SHORT".equals(s.direction)) {
-                s.tp1      = r1(price - 0.5 * atr);
-                s.tp2      = r1(price - 1.0 * atr);
-                s.stopLoss = r1(price + 0.4 * atr);
+                s.tp1      = r1(price - 1.0 * atr);
+                s.tp2      = r1(price - 2.0 * atr);
+                s.stopLoss = r1(price + 0.5 * atr);
             } else {
-                s.tp1      = r1(price + 0.5 * atr);
-                s.tp2      = r1(price + 1.0 * atr);
-                s.stopLoss = r1(price - 0.4 * atr);
+                s.tp1      = r1(price + 1.0 * atr);
+                s.tp2      = r1(price + 2.0 * atr);
+                s.stopLoss = r1(price - 0.5 * atr);
             }
 
             s.tp1PnlPct = r2(pnl(price, s.tp1, s.direction));

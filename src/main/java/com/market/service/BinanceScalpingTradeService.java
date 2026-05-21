@@ -40,7 +40,7 @@ public class BinanceScalpingTradeService {
     private static final long   COOLDOWN_MS          = 10L * 60 * 1000;   // 10 min (was 5)
     private static final long   LOSS_STREAK_COOL_MS  = 30L * 60 * 1000;   // 30 min after streak
     private static final int    LOSS_STREAK_LIMIT    = 2;                  // pause after 2 SL
-    private static final double DEFAULT_AMOUNT   = 20.0;
+    private static final double DEFAULT_AMOUNT   = 50.0;
     private static final int    DEFAULT_LEVERAGE = 10;
     private static final double DEFAULT_TP_PCT   = 0.3;
     private static final double DEFAULT_SL_PCT   = 0.15;
@@ -102,6 +102,8 @@ public class BinanceScalpingTradeService {
             t.confidence = e.confidence;
             t.pnl        = e.pnl;
             t.status     = e.status;
+            t.tp1Hit     = e.tp1Hit;
+            t.tp1Pnl     = e.tp1Pnl;
             t.openedAt   = e.openedAt;
             t.closedAt   = e.closedAt;
             t.dbId       = e.id;
@@ -372,9 +374,11 @@ public class BinanceScalpingTradeService {
         double slPrice  = "LONG".equals(dir)
             ? r1(entry * (1 - sl / 100)) : r1(entry * (1 + sl / 100));
 
-        // Split qty for internal TP tracking: 60% at TP1, 40% at TP2
-        double qty60 = Math.max(0.001, Math.floor(qty * 0.6 * 1000) / 1000.0);
-        double qty40 = Math.max(0.001, Math.floor((qty - qty60) * 1000) / 1000.0);
+        // Split qty for internal TP tracking: 60% at TP1, 40% at TP2.
+        // Fall back to single-TP when position too small to split (Binance min qty = 0.001 BTC).
+        boolean canSplit = qty >= 0.002;
+        double qty60 = canSplit ? Math.max(0.001, Math.floor(qty * 0.6 * 1000) / 1000.0) : qty;
+        double qty40 = canSplit ? Math.max(0.001, Math.floor((qty - qty60) * 1000) / 1000.0) : 0;
 
         StringBuilder log = new StringBuilder();
         log.append(String.format("[Scalping] %s @ %.2f conf=%d%% — ", dir, entry, sig.confidence));
@@ -423,7 +427,7 @@ public class BinanceScalpingTradeService {
             activeEntryPrice = filledPx;
             activeSlPrice    = slPrice;
             activeTp1Price   = tp1Price;
-            activeTp2Price   = tp2Price;
+            activeTp2Price   = canSplit ? tp2Price : 0;  // 0 → single-TP path (qty too small)
             activeTpPrice    = tp1Price;  // primary target for internal monitor
             activeTp1Hit     = false;
             activeTp1Pnl     = 0;
@@ -446,8 +450,9 @@ public class BinanceScalpingTradeService {
             tradeHistory.addLast(trade);
             if (tradeHistory.size() > MAX_HISTORY) tradeHistory.pollFirst();
 
-            String summary = String.format("%s @ %.1f | %s | TP1=%.1f TP2=%.1f (Java)",
-                dir, filledPx, slStatus, tp1Price, tp2Price);
+            String summary = canSplit
+                ? String.format("%s @ %.1f | %s | TP1=%.1f TP2=%.1f (Java)", dir, filledPx, slStatus, tp1Price, tp2Price)
+                : String.format("%s @ %.1f | %s | TP=%.1f (single, qty min)", dir, filledPx, slStatus, tp1Price);
             LOG.infof("[Scalping] %s", summary);
             telegramService.sendScalpingAlert(dir, filledPx, tp1Price, slPrice, sig.confidence);
 
@@ -457,6 +462,21 @@ public class BinanceScalpingTradeService {
             LOG.errorf("[Scalping] ❌ Erreur trade: %s", e.getMessage());
             return ScalpResult.error("Erreur trade: " + e.getMessage());
         }
+    }
+
+    /** For testing: simulates TP1 hit on active position (real Binance order). */
+    public ScalpResult simTp1() {
+        if (activeDir == null) return ScalpResult.error("Aucune position active");
+        if (activeTp1Hit)      return ScalpResult.error("TP1 déjà déclenché");
+        if (activeTp2Price == 0) return ScalpResult.error("Single-TP actif (canSplit=false) — utilise trigger");
+        return last(closePartial(activeTp1Price > 0 ? activeTp1Price : activeTpPrice));
+    }
+
+    /** For testing: simulates TP2 hit on active position after TP1 (real Binance order). */
+    public ScalpResult simTp2() {
+        if (activeDir == null)  return ScalpResult.error("Aucune position active");
+        if (!activeTp1Hit)      return ScalpResult.error("TP1 pas encore déclenché — appelle sim-tp1 d'abord");
+        return last(closePosition("TP2", activeTp2Price > 0 ? activeTp2Price : activeTpPrice));
     }
 
     /** Partially closes 60% of position at TP1 via market order; keeps 40% tracking for TP2. */
@@ -487,6 +507,15 @@ public class BinanceScalpingTradeService {
         activeTp1Hit  = true;
         activeQty     = activeQty40;
         activeTpPrice = activeTp2Price;
+        // Record TP1 in trade history (in-memory + DB)
+        for (ScalpTrade t : tradeHistory) {
+            if ("OPEN".equals(t.status) && activeDir.equals(t.direction)) {
+                t.tp1Hit = true;
+                t.tp1Pnl = activeTp1Pnl;
+                updateTrade(t);
+                break;
+            }
+        }
         return ScalpResult.skipped(String.format(
             "TP1 @ %.1f — trailing 40%% vers TP2 @ %.1f", price, activeTp2Price));
     }
@@ -523,12 +552,17 @@ public class BinanceScalpingTradeService {
                 t.exitPrice = price;
                 t.pnl       = pnl;
                 t.closedAt  = Instant.now();
-                t.status    = reason;
+                t.tp1Hit    = activeTp1Hit;
+                t.tp1Pnl    = activeTp1Pnl;
+                t.status    = (activeTp1Hit && "TP2".equals(reason)) ? "TP1+TP2" : reason;
                 updateTrade(t);
                 break;
             }
         }
         lastTradeAt = Instant.now();
+        // Cancel residual SL algo order on Binance (e.g. after TP2 closes position)
+        try { futuresService.cancelAllOrders("BTCUSDT"); }
+        catch (Exception ex) { LOG.warnf("[Scalping] cancelAll post-close: %s", ex.getMessage()); }
         // Track consecutive SL hits for streak protection
         if (reason != null && reason.contains("SL")) {
             consecutiveLosses++;
@@ -572,6 +606,8 @@ public class BinanceScalpingTradeService {
         e.pnl       = t.pnl;
         e.closedAt  = t.closedAt;
         e.status    = t.status;
+        e.tp1Hit    = t.tp1Hit;
+        e.tp1Pnl    = t.tp1Pnl;
     }
 
     private void clearActive() {
@@ -587,6 +623,38 @@ public class BinanceScalpingTradeService {
         activeQty40      = 0;
         activeConf       = 0;
         activeOpenedAt   = null;
+    }
+
+    /**
+     * Fetches the actual fill price from Binance user trades for the current position's close side.
+     * Falls back to markPrice if the API call fails or no matching trade is found.
+     * This is needed because reconciliation uses the current mark price, which may differ from
+     * the actual SL/TP fill price (e.g. SL fills at $X, price bounces to $Y before next cycle).
+     */
+    private double fetchLastBinanceFillPrice(double markPrice) {
+        if (activeOpenedAt == null || activeDir == null) return markPrice;
+        try {
+            String closeSide = "LONG".equals(activeDir) ? "SELL" : "BUY";
+            String tradesJson = futuresService.getRecentUserTrades("BTCUSDT", 5);
+            com.fasterxml.jackson.databind.JsonNode trades =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(tradesJson);
+            if (trades.isArray()) {
+                for (com.fasterxml.jackson.databind.JsonNode t : trades) {
+                    long   tradeTime = t.path("time").asLong(0);
+                    String side      = t.path("side").asText("");
+                    if (closeSide.equals(side) && tradeTime >= activeOpenedAt.toEpochMilli()) {
+                        double fillPrice = t.path("price").asDouble(0);
+                        if (fillPrice > 0) {
+                            LOG.infof("[Scalping] Fill réel Binance: %.2f (mark=%.2f)", fillPrice, markPrice);
+                            return fillPrice;
+                        }
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            LOG.warnf("[Scalping] getRecentUserTrades échoué: %s — mark price utilisé", ex.getMessage());
+        }
+        return markPrice;
     }
 
     /**
@@ -613,10 +681,13 @@ public class BinanceScalpingTradeService {
     }
 
     /** Called when Binance no longer has the position (SL algo fired, liquidation, external close). */
-    private ScalpResult reconcileClosedPosition(double price) {
+    private ScalpResult reconcileClosedPosition(double markPrice) {
+        // Use actual Binance fill price for accurate PnL and SL/TP classification.
+        // The mark price at monitoring time can differ from the fill price (e.g. SL fills at $X, price bounces to $Y).
+        double price = fetchLastBinanceFillPrice(markPrice);
         String reason = inferCloseReason(price);
-        LOG.infof("[Scalping] ⚡ Position %s @ %.1f fermée côté Binance → %s",
-            activeDir, activeEntryPrice, reason);
+        LOG.infof("[Scalping] ⚡ Position %s @ %.1f fermée côté Binance → %s (fill=%.2f mark=%.2f)",
+            activeDir, activeEntryPrice, reason, price, markPrice);
         // Include PnL from TP1 partial close if it already happened before SL
         double pnl = ("LONG".equals(activeDir)
             ? (price - activeEntryPrice) * activeQty
@@ -628,6 +699,8 @@ public class BinanceScalpingTradeService {
                 t.exitPrice = price;
                 t.pnl       = pnl;
                 t.closedAt  = Instant.now();
+                t.tp1Hit    = activeTp1Hit;
+                t.tp1Pnl    = activeTp1Pnl;
                 t.status    = reason;
                 updateTrade(t);
                 break;
@@ -936,7 +1009,9 @@ public class BinanceScalpingTradeService {
         public double  slPrice;
         public int     confidence;
         public double  pnl;
-        public String  status;   // "OPEN" | "TP" | "TP2" | "SL" | "MANUAL"
+        public String  status;   // "OPEN" | "TP" | "TP1+TP2" | "SL" | "MANUAL"
+        public boolean tp1Hit;   // true when TP1 partial close was executed
+        public double  tp1Pnl;  // PnL captured at TP1 (60% of position)
         public Instant openedAt;
         public Instant closedAt;
     }

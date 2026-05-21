@@ -83,6 +83,18 @@ public class ScalpingResource {
         return Response.ok(result).build();
     }
 
+    /** Simulates TP1 hit on active position — places real partial close on Binance (testnet). */
+    @POST @Path("/sim-tp1")
+    public Response simTp1() {
+        return Response.ok(scalping.simTp1()).build();
+    }
+
+    /** Simulates TP2 hit after TP1 — places real final close on Binance (testnet). */
+    @POST @Path("/sim-tp2")
+    public Response simTp2() {
+        return Response.ok(scalping.simTp2()).build();
+    }
+
     @GET @Path("/diagnose")
     public BinanceScalpingTradeService.ScalpDiag diagnose() {
         return scalping.diagnose();

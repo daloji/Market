@@ -25,9 +25,10 @@ ADX 20–25 → NEUTRAL : tous ×1.0
 | Ordre | Condition | Raison |
 |-------|-----------|--------|
 | 1 | **TTM Squeeze** (BB bands à l'intérieur des Keltner Channels) | Compression de volatilité — mouvement imminent mais sans direction définie |
-| 2 | **ATR(7) < 0.05%** du prix | Volatilité insuffisante pour scalper (seuil abaissé de 0.08→0.05% pour couvrir les sessions asiatiques calmes) |
+| 2 | **ATR(7) < 0.15%** du prix | Volatilité insuffisante — frais Binance taker (0.10% round-trip) > profit TP brut (0.7×ATR) en dessous de ce seuil |
 
 > Le check `bbWidth < 0.30%` standalone a été supprimé : il est redondant avec le TTM Squeeze et se déclenchait trop souvent sur 1m, bloquant le bot en permanence.
+> Le seuil ATR a été remonté de 0.05% à **0.15%** pour garantir que les profits bruts des TP (1.4×ATR) couvrent les frais Binance taker (0.10% round-trip pour open+TP1+TP2).
 
 ---
 
@@ -241,25 +242,27 @@ Résultat :
 
 ---
 
-## Niveaux TP / SL (ATR-based) — Double TP *(AMÉLIORÉ)*
+## Niveaux TP / SL (ATR-based) — Double TP *(CALIBRÉ FRAIS)*
 
 ```
-LONG  :  TP1 = prix + 0.5×ATR  (60% qty)
-         TP2 = prix + 1.0×ATR  (40% qty)
-         SL  = prix − 0.4×ATR
+LONG  :  TP1 = prix + 1.0×ATR  (60% qty)
+         TP2 = prix + 2.0×ATR  (40% qty)
+         SL  = prix − 0.5×ATR
 
-SHORT :  TP1 = prix − 0.5×ATR  (60% qty)
-         TP2 = prix − 1.0×ATR  (40% qty)
-         SL  = prix + 0.4×ATR
+SHORT :  TP1 = prix − 1.0×ATR  (60% qty)
+         TP2 = prix − 2.0×ATR  (40% qty)
+         SL  = prix + 0.5×ATR
 ```
 
 | Objectif | Mouvement | P&L levier ×10 | Qty |
 |----------|-----------|----------------|-----|
-| TP1 | ±0.5×ATR | ~+5% | 60% |
-| TP2 | ±1.0×ATR | ~+10% | 40% |
-| SL  | ∓0.4×ATR | ~−4% | restant |
+| TP1 | ±1.0×ATR | ~+10% | 60% |
+| TP2 | ±2.0×ATR | ~+20% | 40% |
+| SL  | ∓0.5×ATR | ~−5% | restant |
 
-**Ratio risque/récompense moyen : ~1.7 R:R** (vs 1.25 TP1 seul, 2.5 TP2 seul)
+**Ratio risque/récompense moyen : ~2.8 R:R** — calibré pour couvrir frais taker 0.10% round-trip
+
+> Avec ATR ≥ 0.15% : profit brut = 1.4×ATR ≥ 0.21% notional > frais 0.10% → PnL net positif possible.
 
 ### Logique double TP dans BinanceScalpingTradeService :
 

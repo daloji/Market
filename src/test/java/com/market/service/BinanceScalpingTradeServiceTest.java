@@ -88,6 +88,9 @@ class BinanceScalpingTradeServiceTest {
                 .thenReturn("{\"avgPrice\":\"100000\",\"executedQty\":\"0.002\"}");
         when(futuresService.placeCloseOrder(any(), any(), any(), anyDouble(), any(), any()))
                 .thenReturn("{\"algoId\":1234}");
+        // getRecentUserTrades is called by reconcileClosedPosition — return empty to fall back to mark price
+        try { when(futuresService.getRecentUserTrades(any(), anyInt())).thenReturn("[]"); }
+        catch (Exception ignored) {}
         when(scalpingService.getSignal()).thenReturn(waitSignal());
     }
 
@@ -688,6 +691,213 @@ class BinanceScalpingTradeServiceTest {
 
         // PnL = (entry - exitPrice) * qty = (100_000 - 99_600) * 0.002 = 0.80
         assertEquals(0.80, r.pnl, 0.01, "SHORT PnL should be (entry-exit)*qty");
+    }
+
+    // ── Double TP: execute() populates TP1+TP2 internal state ────────────────
+
+    @Test
+    void checkAndTrade_execute_setsActiveTp1AndTp2Prices_andQty40() throws Exception {
+        svc.enable();
+        ScalpingSignal sig = longSignal(80);
+        sig.tp1 = 100_300.0;
+        sig.tp2 = 100_600.0;
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        svc.checkAndTrade();
+
+        BinanceScalpingTradeService real = realBean();
+        // activeTp1Price and activeTp2Price must both be set from the signal — NOT 0
+        assertEquals(100_300.0, (double) getField(real, "activeTp1Price"), 0.1,
+            "activeTp1Price must be set from signal.tp1");
+        assertEquals(100_600.0, (double) getField(real, "activeTp2Price"), 0.1,
+            "activeTp2Price must NOT be 0 — if 0, TP2 branch is skipped forever");
+        // qty40 must be positive so closePartial can compute qty60 = activeQty - qty40
+        double qty40 = (double) getField(real, "activeQty40");
+        assertTrue(qty40 > 0,
+            "activeQty40 must be > 0 for double TP to work (qty=" + getField(real, "activeQty") + ")");
+        // Not yet hit
+        assertFalse((boolean) getField(real, "activeTp1Hit"), "TP1 not hit at open");
+    }
+
+    // ── Double TP: full end-to-end LONG — execute → TP1 (partial) → TP2 (close) ─
+
+    @Test
+    void checkAndTrade_doubleTP_longFullFlow_tp1ThenTp2_pnlAccumulates() throws Exception {
+        svc.enable();
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
+
+        // Sequence of getPositionRisk responses:
+        //  call 1 = pre-trade guard (no position → allow entry)
+        //  call 2 = TP1 monitoring check (full qty still open)
+        //  call 3 = TP2 monitoring check (40% remaining after TP1)
+        when(futuresService.getPositionRisk(any()))
+            .thenReturn("[{\"positionAmt\":\"0\"}]")
+            .thenReturn("[{\"positionAmt\":\"0.002\"}]")
+            .thenReturn("[{\"positionAmt\":\"0.001\"}]");
+
+        // ── Step 1: open trade ────────────────────────────────────────────────
+        ScalpingSignal openSig = longSignal(80);
+        openSig.tp1 = 100_300.0;
+        openSig.tp2 = 100_600.0;
+        when(scalpingService.getSignal()).thenReturn(openSig);
+
+        BinanceScalpingTradeService.ScalpResult r1 = svc.checkAndTrade();
+        assertEquals("placed", r1.status, "Trade must be placed");
+
+        BinanceScalpingTradeService real = realBean();
+        double qty   = (double) getField(real, "activeQty");
+        double qty40 = (double) getField(real, "activeQty40");
+        assertEquals(0.002, qty,   0.0001, "Total qty");
+        assertEquals(0.001, qty40, 0.0001, "qty40 = 40% for TP2");
+        assertEquals(100_300.0, (double) getField(real, "activeTp1Price"), 0.1, "TP1 from signal");
+        assertEquals(100_600.0, (double) getField(real, "activeTp2Price"), 0.1,
+            "TP2 must NOT be 0 after execute");
+
+        // ── Step 2: TP1 hit — price above TP1 ────────────────────────────────
+        ScalpingSignal tp1Sig = new ScalpingSignal();
+        tp1Sig.currentPrice = 100_350.0;
+        when(scalpingService.getSignal()).thenReturn(tp1Sig);
+
+        BinanceScalpingTradeService.ScalpResult r2 = svc.checkAndTrade();
+        assertEquals("skipped", r2.status,
+            "TP1 hit must return skipped (still watching for TP2), got: " + r2.message);
+        assertTrue(r2.message.contains("TP1"), "Message must mention TP1: " + r2.message);
+        assertTrue((boolean) getField(real, "activeTp1Hit"), "activeTp1Hit=true after TP1");
+        assertEquals(0.001, (double) getField(real, "activeQty"), 0.0001,
+            "activeQty must be reduced to qty40=0.001 after TP1");
+        // 60% partial close sent to Binance: qty60 = qty - qty40 = 0.002 - 0.001 = 0.001
+        verify(futuresService, times(1))
+            .closeWithMarket(eq("BTCUSDT"), eq("SELL"), eq("0.001"), isNull());
+
+        // ── Step 3: TP2 hit — price above TP2 ────────────────────────────────
+        ScalpingSignal tp2Sig = new ScalpingSignal();
+        tp2Sig.currentPrice = 100_650.0;
+        when(scalpingService.getSignal()).thenReturn(tp2Sig);
+
+        BinanceScalpingTradeService.ScalpResult r3 = svc.checkAndTrade();
+        assertEquals("closed", r3.status, "TP2 must fully close position");
+        assertEquals("TP2", r3.message);
+        // PnL = TP1 gain (100_350 - 100_000) × 0.001  +  TP2 gain (100_650 - 100_000) × 0.001
+        //     = 0.350 + 0.650 = 1.000
+        assertEquals(1.00, r3.pnl, 0.05, "Total PnL must accumulate TP1 + TP2: " + r3.pnl);
+        assertNull(getField(real, "activeDir"), "Position cleared after TP2");
+        // Two closeWithMarket calls total: TP1 (0.001) + TP2 (0.001)
+        verify(futuresService, times(2))
+            .closeWithMarket(eq("BTCUSDT"), eq("SELL"), eq("0.001"), isNull());
+    }
+
+    // ── Double TP: full end-to-end SHORT ─────────────────────────────────────
+
+    @Test
+    void checkAndTrade_doubleTP_shortFullFlow_tp1ThenTp2_pnlAccumulates() throws Exception {
+        svc.enable();
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
+        when(futuresService.getPositionRisk(any()))
+            .thenReturn("[{\"positionAmt\":\"0\"}]")
+            .thenReturn("[{\"positionAmt\":\"0.002\"}]")
+            .thenReturn("[{\"positionAmt\":\"0.001\"}]");
+
+        // ── Step 1: open SHORT trade ──────────────────────────────────────────
+        ScalpingSignal openSig = shortSignal(80);
+        openSig.tp1 = 99_700.0;   // SHORT: TP1 below entry
+        openSig.tp2 = 99_400.0;   // SHORT: TP2 further below
+        when(scalpingService.getSignal()).thenReturn(openSig);
+
+        assertEquals("placed", svc.checkAndTrade().status);
+        BinanceScalpingTradeService real = realBean();
+        assertEquals(99_700.0, (double) getField(real, "activeTp1Price"), 0.1, "TP1 for SHORT");
+        assertEquals(99_400.0, (double) getField(real, "activeTp2Price"), 0.1, "TP2 for SHORT must NOT be 0");
+
+        // ── Step 2: TP1 hit — price BELOW TP1 for SHORT ──────────────────────
+        ScalpingSignal tp1Sig = new ScalpingSignal();
+        tp1Sig.currentPrice = 99_650.0;
+        when(scalpingService.getSignal()).thenReturn(tp1Sig);
+
+        BinanceScalpingTradeService.ScalpResult r2 = svc.checkAndTrade();
+        assertEquals("skipped", r2.status,
+            "SHORT TP1 hit must return skipped (watching for TP2): " + r2.message);
+        assertTrue((boolean) getField(real, "activeTp1Hit"));
+        // Close side for SHORT is BUY
+        verify(futuresService, times(1))
+            .closeWithMarket(eq("BTCUSDT"), eq("BUY"), eq("0.001"), isNull());
+
+        // ── Step 3: TP2 hit — price BELOW TP2 for SHORT ──────────────────────
+        ScalpingSignal tp2Sig = new ScalpingSignal();
+        tp2Sig.currentPrice = 99_350.0;
+        when(scalpingService.getSignal()).thenReturn(tp2Sig);
+
+        BinanceScalpingTradeService.ScalpResult r3 = svc.checkAndTrade();
+        assertEquals("closed", r3.status);
+        assertEquals("TP2", r3.message);
+        // PnL = (100_000 - 99_650) × 0.001  +  (100_000 - 99_350) × 0.001 = 0.35 + 0.65 = 1.00
+        assertEquals(1.00, r3.pnl, 0.05);
+        assertNull(getField(real, "activeDir"));
+        verify(futuresService, times(2))
+            .closeWithMarket(eq("BTCUSDT"), eq("BUY"), eq("0.001"), isNull());
+    }
+
+    // ── Double TP: after TP1, position remains active between TP1 and TP2 ────
+
+    @Test
+    void checkAndTrade_doubleTP_afterTp1_priceBeforeTp2_stillMonitoring() throws Exception {
+        svc.enable();
+        BinanceScalpingTradeService real = realBean();
+        setField(real, "activeDir",        "LONG");
+        setField(real, "activeEntryPrice", 100_000.0);
+        setField(real, "activeTp1Price",   100_300.0);
+        setField(real, "activeTp2Price",   100_600.0);
+        setField(real, "activeSlPrice",     99_850.0);
+        setField(real, "activeQty",            0.001);   // 40% remaining after TP1
+        setField(real, "activeTp1Hit",         true);    // TP1 already done
+        setField(real, "activeTp1Pnl",         0.35);    // TP1 gain locked in
+
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.001\"}]");
+
+        // Price is between TP1 (100_300) and TP2 (100_600) — must keep watching
+        ScalpingSignal mid = new ScalpingSignal();
+        mid.currentPrice = 100_450.0;
+        when(scalpingService.getSignal()).thenReturn(mid);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("skipped", r.status, "Must stay active between TP1 and TP2");
+        assertTrue(r.message.contains("TP2") || r.message.contains("trailing"),
+            "Must mention TP2 monitoring: " + r.message);
+        // No close order — waiting for TP2
+        verify(futuresService, never()).closeWithMarket(any(), any(), any(), any());
+        assertNotNull(getField(real, "activeDir"), "Position not cleared yet");
+    }
+
+    // ── Double TP: SL hit after TP1 — accumulated PnL reduces total loss ─────
+
+    @Test
+    void checkAndTrade_doubleTP_afterTp1_slHit_pnlIncludesTp1Gain() throws Exception {
+        svc.enable();
+        BinanceScalpingTradeService real = realBean();
+        setField(real, "activeDir",        "LONG");
+        setField(real, "activeEntryPrice", 100_000.0);
+        setField(real, "activeTp2Price",   100_600.0);
+        setField(real, "activeSlPrice",     99_850.0);
+        setField(real, "activeQty",            0.001);   // 40% remaining after TP1
+        setField(real, "activeTp1Hit",         true);
+        setField(real, "activeTp1Pnl",         0.35);    // $0.35 locked at TP1
+
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.001\"}]");
+
+        ScalpingSignal slSig = new ScalpingSignal();
+        slSig.currentPrice = 99_800.0; // below SL=99_850
+        when(scalpingService.getSignal()).thenReturn(slSig);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("closed", r.status);
+        assertEquals("SL", r.message);
+        // PnL = (99_800 - 100_000) × 0.001  +  activeTp1Pnl(0.35)
+        //     = -0.20 + 0.35 = +0.15
+        // Without TP1 it would be -0.20; with TP1 the loss is reduced / turns positive
+        assertEquals(0.15, r.pnl, 0.02,
+            "PnL after SL must include TP1 gain to reduce loss: " + r.pnl);
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────

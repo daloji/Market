@@ -307,6 +307,16 @@ public class BinanceFuturesService {
         return result;
     }
 
+    /**
+     * Returns the most recent user trades for a symbol (GET /fapi/v1/userTrades).
+     * Used to recover the actual fill price when a SL/TP fires asynchronously on Binance
+     * before the Java monitoring cycle detects the close.
+     */
+    public String getRecentUserTrades(String symbol, int limit) throws Exception {
+        String params = "symbol=" + symbol + "&limit=" + limit + tsSuffix();
+        return get("/fapi/v1/userTrades", params + "&signature=" + sign(params));
+    }
+
     // ── Public market data (no auth, always live fapi.binance.com) ────────────
 
     /**
