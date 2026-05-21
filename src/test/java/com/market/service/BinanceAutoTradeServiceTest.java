@@ -721,4 +721,68 @@ class BinanceAutoTradeServiceTest {
         assertThrows(RuntimeException.class, () -> svc.closePosition("BTCUSDT"),
                 "Should throw when no position is open");
     }
+
+    // ── TP qty split tests ────────────────────────────────────────────────────
+
+    @Test
+    void execute_smallPosition_singleTpPlaced() throws Exception {
+        // 50 USDT × 3× at 100000 → rawQty=0.0015 → totalQt=0.001 → single TP only
+        svc.enable();
+        svc.setAmountUsdt(50.0);
+        svc.setLeverage(3);
+        when(analysisService.getSignal()).thenReturn(longSignal(75, 100000));
+        svc.checkAndTrade();
+        BinanceAutoTradeService.AutoTradeResult r = svc.checkAndTrade();
+        assertEquals("placed", r.status);
+        // Only 1 TAKE_PROFIT_MARKET order should be placed (TP1 only)
+        org.mockito.Mockito.verify(futuresService, org.mockito.Mockito.times(1))
+            .placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+    }
+
+    @Test
+    void execute_mediumPosition_twoTpsPlaced() throws Exception {
+        // 50 USDT × 5× at 100000 → rawQty=0.0025 → totalQt=0.002 → 2 TPs
+        svc.enable();
+        svc.setAmountUsdt(50.0);
+        svc.setLeverage(5);
+        when(analysisService.getSignal()).thenReturn(longSignal(75, 100000));
+        svc.checkAndTrade();
+        BinanceAutoTradeService.AutoTradeResult r = svc.checkAndTrade();
+        assertEquals("placed", r.status);
+        // 2 TAKE_PROFIT_MARKET orders: TP1 (0.001) + TP2 (0.001)
+        org.mockito.Mockito.verify(futuresService, org.mockito.Mockito.times(2))
+            .placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+    }
+
+    @Test
+    void execute_largePosition_threeTpsPlaced() throws Exception {
+        // 50 USDT × 10× at 100000 → rawQty=0.005 → totalQt=0.005 → 3 TPs
+        svc.enable();
+        svc.setAmountUsdt(50.0);
+        svc.setLeverage(10);
+        when(analysisService.getSignal()).thenReturn(longSignal(75, 100000));
+        svc.checkAndTrade();
+        BinanceAutoTradeService.AutoTradeResult r = svc.checkAndTrade();
+        assertEquals("placed", r.status);
+        // 3 TAKE_PROFIT_MARKET orders: TP1 + TP2 + TP3, sum = 0.005 = totalQt
+        org.mockito.Mockito.verify(futuresService, org.mockito.Mockito.times(3))
+            .placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+    }
+
+    @Test
+    void execute_tpQtySumEqualsPositionQty() throws Exception {
+        // Verifies qty1+qty2+qty3 == totalQt so Binance doesn't reject reduceOnly orders
+        // 50 USDT × 10× at 100000 → totalQt=0.005, ratios 0.40/0.35 → qty1=0.002, qty2=0.001, qty3=0.002
+        svc.enable();
+        svc.setAmountUsdt(50.0);
+        svc.setLeverage(10);
+        java.util.List<String> capturedQtys = new java.util.ArrayList<>();
+        org.mockito.Mockito.doAnswer(inv -> { capturedQtys.add(inv.getArgument(4)); return "{}"; })
+            .when(futuresService).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+        when(analysisService.getSignal()).thenReturn(longSignal(75, 100000));
+        svc.checkAndTrade();
+        svc.checkAndTrade();
+        double sum = capturedQtys.stream().mapToDouble(Double::parseDouble).sum();
+        assertEquals(0.005, sum, 0.0001, "Sum of TP quantities must equal totalQt (0.005)");
+    }
 }

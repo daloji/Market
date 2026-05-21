@@ -327,7 +327,7 @@ class ScalpingAnalysisServiceTest {
 
     @Test
     void getSignal_lowVolatility_atrGateReturnsWait() {
-        // LOW_VOLATILITY: closes cycle ±100 (BB > 0.3%) but true range only ±8 → ATR ~0.03% → gate fires
+        // LOW_VOLATILITY: true range only ±8 on basePrice 50000 → ATR ~0.03% < 0.20% gate
         when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
                 .thenReturn(buildCandles(200, 50_000, CandlePattern.LOW_VOLATILITY));
         ScalpingSignal s = service.getSignal();

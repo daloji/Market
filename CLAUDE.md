@@ -20,14 +20,19 @@ Tests :
 - `BinanceScalpingTradeServiceTest.java` — 29 tests trading
 - `BinanceFuturesServiceTest.java` — 17 tests API
 
-## Paramètres actuels (v3 — 2026-05-21)
+## Paramètres actuels (v4 — 2026-05-21)
 
 ```
-ATR gate       : 0.15% minimum (break-even frais taker 0.10% round-trip)
-Seuils signal  : 55 pts avec tendance / 72 pts contre tendance (SMA50)
+ATR gate       : 0.20% minimum (increased from 0.15%)
+Timeframes     : 1m + 5m + 15m (macro gate obligatoire)
+Seuils signal  : 60 pts (3/3 TF alignés) / 75 pts (2/3 TF alignés)
+                 WAIT absolu si ≤1/3 TF aligné
 DEFAULT_AMOUNT : 50 USDT à 10× levier
-TP1 = 1.0×ATR (60% qty), TP2 = 2.0×ATR (40% qty), SL = 0.5×ATR
-R:R ~2.8 — gross 1.4×ATR > frais 0.10% notional
+TP1 = 1.0×ATR (60% qty), TP2 = 2.0×ATR (40% qty), SL = 0.6×ATR
+R:R ~1.67 (TP1) / ~3.33 (TP2)
+
+Indicateurs v4: RSI(14), MACD(12,26,9), Stoch(14,3), Supertrend(10,3), ATR(14)
+3 piliers: Multi-TF Alignment (40) + Momentum Quality (40) + Volume/Flow (25)
 ```
 
 ## Patterns critiques

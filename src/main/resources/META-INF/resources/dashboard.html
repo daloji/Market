@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Dashboard — BTC Trading</title>
+  <link rel="stylesheet" href="bitcoin.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <style>
+    body { max-width: 1300px; margin: 0 auto; }
+
+    /* ── KPI grid ─────────────────────────────────── */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin: 20px 0;
+    }
+    .kpi-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      text-align: center;
+    }
+    .kpi-value {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      font-variant-numeric: tabular-nums;
+    }
+    .kpi-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+    .kpi-sub   { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .green { color: var(--buy); }
+    .red   { color: var(--sell); }
+    .yellow{ color: var(--hold); }
+    .blue  { color: var(--blue); }
+
+    /* ── Charts ───────────────────────────────────── */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 900px) { .charts-row { grid-template-columns: 1fr; } }
+
+    .chart-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .chart-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      margin-bottom: 14px;
+    }
+    .chart-wrap { position: relative; }
+
+    /* ── Service breakdown ────────────────────────── */
+    .breakdown-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 700px) { .breakdown-grid { grid-template-columns: 1fr; } }
+
+    .breakdown-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .breakdown-title {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .bd-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid #1e2328;
+      font-size: 13px;
+    }
+    .bd-row:last-child { border-bottom: none; }
+    .bd-label { color: var(--muted); }
+
+    /* ── Recent trades ────────────────────────────── */
+    .section-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      margin: 24px 0 12px;
+    }
+    .recent-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 40px;
+    }
+    .recent-table th {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      background: #0c0f12;
+    }
+    .recent-table td {
+      padding: 10px 14px;
+      font-size: 13px;
+      border-bottom: 1px solid #1e2328;
+      vertical-align: middle;
+    }
+    .recent-table tr:last-child td { border-bottom: none; }
+    .recent-table tr:hover td { background: #1a1f27; }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .3px;
+    }
+    .badge.long  { background: #1a3d2b; color: var(--buy); }
+    .badge.short { background: #3d1a1a; color: var(--sell); }
+    .badge.tp    { background: #1a3d2b; color: var(--buy); }
+    .badge.sl    { background: #3d1a1a; color: var(--sell); }
+    .badge.manual{ background: #1e2328; color: var(--muted); }
+    .badge.scalp { background: #1a2d4d; color: var(--blue); }
+    .badge.auto  { background: #2d1a4d; color: #c084fc; }
+
+    .loading { text-align: center; padding: 60px; color: var(--muted); font-size: 14px; }
+    .error-msg { color: var(--sell); font-size: 13px; text-align: center; padding: 20px; }
+
+    /* ── Streak bar ───────────────────────────────── */
+    .streak-bar {
+      display: flex;
+      gap: 3px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    .streak-dot {
+      width: 10px; height: 10px;
+      border-radius: 2px;
+    }
+    .streak-dot.win  { background: var(--buy); }
+    .streak-dot.loss { background: var(--sell); }
+
+    /* ── Filter tabs ──────────────────────────────── */
+    .filter-tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .tab-btn {
+      padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 600;
+      background: var(--card); border: 1px solid var(--border);
+      color: var(--muted); cursor: pointer; transition: all .2s;
+    }
+    .tab-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .tab-btn:hover:not(.active) { border-color: var(--blue); color: var(--blue); }
+  </style>
+</head>
+<body>
+
+<header class="top-bar">
+  <a href="bitcoin.html" class="back-btn">← BTC Futures</a>
+  <div class="header-center">
+    <span class="btc-icon">₿</span>
+    <h1>Dashboard</h1>
+  </div>
+  <div class="header-right">
+    <span id="last-update" style="font-size:12px;color:var(--muted)"></span>
+    <button id="btn-refresh" onclick="loadAll()">⟳ Actualiser</button>
+  </div>
+</header>
+
+<main style="padding: 0 16px">
+
+  <div id="main-content">
+    <div class="loading" id="loading-msg">Chargement des données…</div>
+  </div>
+
+</main>
+
+<script>
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const fmt2    = v => Number(v).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtSign = v => (v >= 0 ? '+' : '') + fmt2(v);
+const pnlCls  = v => v >= 0 ? 'green' : 'red';
+const pad2    = n => String(n).padStart(2, '0');
+
+function fmtDate(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  return `${pad2(d.getDate())}/${pad2(d.getMonth()+1)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+function fmtDuration(ms) {
+  if (!ms || ms < 0) return '—';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+function isoDay(ts) {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+}
+
+// ── Normalise trades from both services ───────────────────────────────────────
+function normaliseScalping(t) {
+  const pnl = t.pnl != null ? t.pnl : 0;
+  const openMs  = t.openedAt  || 0;
+  const closeMs = t.closedAt  || 0;
+  const status  = (t.status || 'OPEN').toUpperCase();
+  const isWin   = status.startsWith('TP');
+  const isLoss  = status === 'SL';
+  return {
+    id:        't_s_' + (t.dbId || Math.random()),
+    service:   'scalping',
+    direction: (t.direction || '').toUpperCase(),
+    pnl,
+    status,
+    isWin,
+    isLoss,
+    openMs,
+    closeMs,
+    duration:  closeMs && openMs ? closeMs - openMs : null,
+    entry:     t.entryPrice,
+    exit:      t.exitPrice,
+    confidence:t.confidence,
+  };
+}
+function normaliseAuto(t) {
+  const pnl     = t.pnlNet != null ? t.pnlNet : (t.pnlUsd != null ? t.pnlUsd : 0);
+  const openMs  = t.openedAt  || 0;
+  const closeMs = t.closedAt  || 0;
+  const reason  = (t.closeReason || 'MANUAL').toUpperCase();
+  const isWin   = reason.startsWith('TP');
+  const isLoss  = reason === 'SL' || reason === 'LIQUIDATION';
+  return {
+    id:        't_a_' + (t.id || Math.random()),
+    service:   'auto',
+    direction: (t.direction || '').toUpperCase(),
+    pnl,
+    status:    reason,
+    isWin,
+    isLoss,
+    openMs,
+    closeMs,
+    duration:  closeMs && openMs ? closeMs - openMs : null,
+    entry:     t.entryPrice,
+    exit:      null,
+    confidence:null,
+  };
+}
+
+// ── Chart instances (kept for destroy on re-render) ───────────────────────────
+let chartCumPnl = null, chartDaily = null, chartDonut = null;
+
+// ── Main load ─────────────────────────────────────────────────────────────────
+async function loadAll() {
+  document.getElementById('btn-refresh').disabled = true;
+  try {
+    const [scalpResp, autoResp] = await Promise.all([
+      fetch('/api/scalping/history'),
+      fetch('/api/trades/all/history'),
+    ]);
+
+    const scalpRaw = scalpResp.ok ? await scalpResp.json() : [];
+    const autoRaw  = autoResp.ok  ? await autoResp.json()  : [];
+
+    // Normalise & filter closed trades only
+    const scalpTrades = (Array.isArray(scalpRaw) ? scalpRaw : [])
+      .filter(t => t.status && t.status !== 'OPEN')
+      .map(normaliseScalping);
+    const autoTrades  = (Array.isArray(autoRaw) ? autoRaw : [])
+      .filter(t => t.closeReason && t.closedAt)
+      .map(normaliseAuto);
+
+    const all = [...scalpTrades, ...autoTrades]
+      .filter(t => t.closeMs > 0)
+      .sort((a, b) => a.closeMs - b.closeMs);
+
+    render(all, scalpTrades, autoTrades);
+    document.getElementById('last-update').textContent =
+      'Mis à jour ' + new Date().toLocaleTimeString('fr-FR');
+  } catch (err) {
+    document.getElementById('main-content').innerHTML =
+      `<div class="error-msg">Erreur de chargement : ${err.message}</div>`;
+  } finally {
+    document.getElementById('btn-refresh').disabled = false;
+  }
+}
+
+// ── Main render ───────────────────────────────────────────────────────────────
+function render(all, scalpTrades, autoTrades) {
+  const el = document.getElementById('main-content');
+  el.innerHTML = buildHTML();
+
+  // Attach data and draw
+  renderKPIs(all, scalpTrades, autoTrades);
+  renderCumPnlChart(all);
+  renderDailyChart(all);
+  renderDonut(all);
+  renderBreakdown(scalpTrades, autoTrades);
+  renderRecentTrades(all.slice().reverse().slice(0, 30));
+  renderStreak(all.slice().reverse().slice(0, 40));
+}
+
+// ── Build static HTML skeleton ────────────────────────────────────────────────
+function buildHTML() {
+  return `
+  <!-- KPI cards -->
+  <div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-value" id="k-total">—</div><div class="kpi-label">Trades clôturés</div></div>
+    <div class="kpi-card"><div class="kpi-value green" id="k-wins">—</div><div class="kpi-label">Gagnants</div></div>
+    <div class="kpi-card"><div class="kpi-value red"   id="k-losses">—</div><div class="kpi-label">Perdants</div></div>
+    <div class="kpi-card"><div class="kpi-value yellow" id="k-winrate">—</div><div class="kpi-label">Win Rate</div></div>
+    <div class="kpi-card"><div class="kpi-value" id="k-pnl">—</div><div class="kpi-label">P&L Net Total</div><div class="kpi-sub" id="k-pnl-sub"></div></div>
+    <div class="kpi-card"><div class="kpi-value" id="k-avg-pnl">—</div><div class="kpi-label">P&L Moyen / Trade</div></div>
+    <div class="kpi-card"><div class="kpi-value" id="k-best">—</div><div class="kpi-label">Meilleur Trade</div></div>
+    <div class="kpi-card"><div class="kpi-value" id="k-worst">—</div><div class="kpi-label">Pire Trade</div></div>
+  </div>
+
+  <!-- Streak -->
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;margin-bottom:16px">
+    <div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">40 derniers trades</div>
+    <div class="streak-bar" id="streak-bar"></div>
+  </div>
+
+  <!-- Charts row -->
+  <div class="charts-row">
+    <div class="chart-card">
+      <div class="chart-title">P&L Cumulé dans le temps</div>
+      <div class="chart-wrap" style="height:260px"><canvas id="chart-cum-pnl"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Répartition résultats</div>
+      <div class="chart-wrap" style="height:260px"><canvas id="chart-donut"></canvas></div>
+    </div>
+  </div>
+
+  <div class="chart-card" style="margin-bottom:16px">
+    <div class="chart-title">P&L par jour</div>
+    <div class="chart-wrap" style="height:200px"><canvas id="chart-daily"></canvas></div>
+  </div>
+
+  <!-- Service breakdown -->
+  <div class="breakdown-grid">
+    <div class="breakdown-card">
+      <div class="breakdown-title"><span class="badge scalp">SCALPING</span> Détail</div>
+      <div id="bd-scalp"></div>
+    </div>
+    <div class="breakdown-card">
+      <div class="breakdown-title"><span class="badge auto">AUTO-TRADE</span> Détail</div>
+      <div id="bd-auto"></div>
+    </div>
+  </div>
+
+  <!-- Recent trades -->
+  <div class="section-title">30 derniers trades clôturés</div>
+  <table class="recent-table">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Service</th>
+        <th>Dir</th>
+        <th>Statut</th>
+        <th>Entrée</th>
+        <th>P&L</th>
+        <th>Durée</th>
+        <th>Confiance</th>
+      </tr>
+    </thead>
+    <tbody id="recent-tbody"></tbody>
+  </table>
+  `;
+}
+
+// ── KPI rendering ─────────────────────────────────────────────────────────────
+function renderKPIs(all, scalpTrades, autoTrades) {
+  const total  = all.length;
+  const wins   = all.filter(t => t.isWin).length;
+  const losses = all.filter(t => t.isLoss).length;
+  const wr     = total > 0 ? (wins / total * 100) : 0;
+  const pnlSum = all.reduce((s, t) => s + t.pnl, 0);
+  const avgPnl = total > 0 ? pnlSum / total : 0;
+  const best   = all.length ? Math.max(...all.map(t => t.pnl)) : 0;
+  const worst  = all.length ? Math.min(...all.map(t => t.pnl)) : 0;
+
+  setText('k-total',   total);
+  setText('k-wins',    wins);
+  setText('k-losses',  losses);
+  setText('k-winrate', wr.toFixed(1) + '%');
+  setHtml('k-pnl',     `<span class="${pnlCls(pnlSum)}">${fmtSign(pnlSum)} $</span>`);
+  document.getElementById('k-pnl-sub').textContent =
+    `scalp: ${fmtSign(scalpTrades.reduce((s,t)=>s+t.pnl,0))} $ | auto: ${fmtSign(autoTrades.reduce((s,t)=>s+t.pnl,0))} $`;
+  setHtml('k-avg-pnl', `<span class="${pnlCls(avgPnl)}">${fmtSign(avgPnl)} $</span>`);
+  setHtml('k-best',    `<span class="green">${fmtSign(best)} $</span>`);
+  setHtml('k-worst',   `<span class="red">${fmtSign(worst)} $</span>`);
+
+  // Colour the win rate dynamically
+  const wrEl = document.getElementById('k-winrate');
+  wrEl.className = 'kpi-value ' + (wr >= 55 ? 'green' : wr >= 40 ? 'yellow' : 'red');
+}
+
+// ── Streak rendering ──────────────────────────────────────────────────────────
+function renderStreak(last40) {
+  const bar = document.getElementById('streak-bar');
+  bar.innerHTML = last40.reverse().map(t => {
+    const cls = t.isWin ? 'win' : t.isLoss ? 'loss' : 'loss';
+    const lbl = `${t.service === 'scalping' ? 'S' : 'A'} ${t.direction} ${fmtSign(t.pnl)}$`;
+    return `<div class="streak-dot ${cls}" title="${lbl}"></div>`;
+  }).join('');
+}
+
+// ── Cumulative PnL chart ──────────────────────────────────────────────────────
+function renderCumPnlChart(all) {
+  if (chartCumPnl) { chartCumPnl.destroy(); chartCumPnl = null; }
+  const ctx = document.getElementById('chart-cum-pnl').getContext('2d');
+
+  let cum = 0;
+  const labels = [];
+  const dataScalp = [], dataAuto = [], dataCum = [];
+  let cumS = 0, cumA = 0;
+
+  all.forEach(t => {
+    cum += t.pnl;
+    if (t.service === 'scalping') cumS += t.pnl; else cumA += t.pnl;
+    labels.push(fmtDate(t.closeMs));
+    dataCum.push(+cum.toFixed(2));
+    dataScalp.push(+cumS.toFixed(2));
+    dataAuto.push(+cumA.toFixed(2));
+  });
+
+  if (all.length === 0) {
+    // empty placeholder
+    labels.push(''); dataCum.push(0); dataScalp.push(0); dataAuto.push(0);
+  }
+
+  chartCumPnl = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Total cumulé',  data: dataCum,  borderColor: '#58a6ff', backgroundColor: '#58a6ff22', fill: true,  tension: 0.3, borderWidth: 2, pointRadius: 0 },
+        { label: 'Scalping',      data: dataScalp, borderColor: '#3fb950', backgroundColor: 'transparent', fill: false, tension: 0.3, borderWidth: 1.5, pointRadius: 0, borderDash: [4,4] },
+        { label: 'Auto-trade',    data: dataAuto,  borderColor: '#c084fc', backgroundColor: 'transparent', fill: false, tension: 0.3, borderWidth: 1.5, pointRadius: 0, borderDash: [4,4] },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#8b949e', font: { size: 11 } } },
+        tooltip: {
+          backgroundColor: '#1c2128',
+          borderColor: '#30363d',
+          borderWidth: 1,
+          titleColor: '#e6edf3',
+          bodyColor: '#8b949e',
+          callbacks: { label: ctx => ` ${ctx.dataset.label}: ${fmtSign(ctx.parsed.y)} $` }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8b949e', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => fmtSign(v) + ' $' }, grid: { color: '#21262d' } }
+      }
+    }
+  });
+}
+
+// ── Daily PnL bar chart ───────────────────────────────────────────────────────
+function renderDailyChart(all) {
+  if (chartDaily) { chartDaily.destroy(); chartDaily = null; }
+  const ctx = document.getElementById('chart-daily').getContext('2d');
+
+  // Aggregate by day
+  const byDay = {};
+  all.forEach(t => {
+    const day = isoDay(t.closeMs);
+    byDay[day] = (byDay[day] || 0) + t.pnl;
+  });
+
+  const days = Object.keys(byDay).sort();
+  const vals = days.map(d => +byDay[d].toFixed(2));
+  const colors = vals.map(v => v >= 0 ? '#3fb95066' : '#f8514966');
+  const borders = vals.map(v => v >= 0 ? '#3fb950' : '#f85149');
+
+  const formatDay = d => {
+    const [y, m, dd] = d.split('-');
+    return `${dd}/${m}`;
+  };
+
+  if (days.length === 0) { days.push('—'); vals.push(0); colors.push('#30363d'); borders.push('#30363d'); }
+
+  chartDaily = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: days.map(formatDay),
+      datasets: [{
+        label: 'P&L du jour',
+        data: vals,
+        backgroundColor: colors,
+        borderColor: borders,
+        borderWidth: 1,
+        borderRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1c2128', borderColor: '#30363d', borderWidth: 1,
+          titleColor: '#e6edf3', bodyColor: '#8b949e',
+          callbacks: { label: ctx => ` ${fmtSign(ctx.parsed.y)} $` }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8b949e', font: { size: 10 } }, grid: { color: '#21262d' } },
+        y: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => fmtSign(v) + ' $' }, grid: { color: '#21262d' } }
+      }
+    }
+  });
+}
+
+// ── Donut chart ───────────────────────────────────────────────────────────────
+function renderDonut(all) {
+  if (chartDonut) { chartDonut.destroy(); chartDonut = null; }
+  const ctx = document.getElementById('chart-donut').getContext('2d');
+
+  const wins   = all.filter(t => t.isWin).length;
+  const losses = all.filter(t => t.isLoss).length;
+  const other  = all.length - wins - losses;
+
+  chartDonut = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Wins (TP)', 'Losses (SL)', 'Manuels'],
+      datasets: [{
+        data: [wins || 0, losses || 0, other || 0],
+        backgroundColor: ['#3fb95066', '#f8514966', '#30363d'],
+        borderColor:     ['#3fb950',   '#f85149',   '#484f58'],
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#8b949e', font: { size: 11 }, padding: 12 } },
+        tooltip: {
+          backgroundColor: '#1c2128', borderColor: '#30363d', borderWidth: 1,
+          titleColor: '#e6edf3', bodyColor: '#8b949e',
+          callbacks: {
+            label: ctx => {
+              const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+              const pct   = total > 0 ? (ctx.parsed / total * 100).toFixed(1) : '0.0';
+              return ` ${ctx.label}: ${ctx.parsed} (${pct}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+// ── Per-service breakdown ─────────────────────────────────────────────────────
+function serviceStats(trades) {
+  const total  = trades.length;
+  const wins   = trades.filter(t => t.isWin).length;
+  const losses = trades.filter(t => t.isLoss).length;
+  const pnl    = trades.reduce((s, t) => s + t.pnl, 0);
+  const wr     = total > 0 ? (wins / total * 100).toFixed(1) : '0.0';
+  const avgDur = trades.filter(t => t.duration).reduce((s,t)=>s+t.duration,0) /
+                 (trades.filter(t=>t.duration).length || 1);
+  return { total, wins, losses, pnl, wr, avgDur };
+}
+
+function renderBreakdown(scalpTrades, autoTrades) {
+  function bdHTML(stats) {
+    return `
+      <div class="bd-row"><span class="bd-label">Trades</span><span>${stats.total}</span></div>
+      <div class="bd-row"><span class="bd-label">Gagnants</span><span class="green">${stats.wins}</span></div>
+      <div class="bd-row"><span class="bd-label">Perdants</span><span class="red">${stats.losses}</span></div>
+      <div class="bd-row"><span class="bd-label">Win Rate</span><span class="${stats.wr >= 55 ? 'green' : stats.wr >= 40 ? 'yellow' : 'red'}">${stats.wr}%</span></div>
+      <div class="bd-row"><span class="bd-label">P&L Net</span><span class="${pnlCls(stats.pnl)}">${fmtSign(stats.pnl)} $</span></div>
+      <div class="bd-row"><span class="bd-label">Durée moy.</span><span>${fmtDuration(stats.avgDur)}</span></div>
+    `;
+  }
+  document.getElementById('bd-scalp').innerHTML = bdHTML(serviceStats(scalpTrades));
+  document.getElementById('bd-auto').innerHTML  = bdHTML(serviceStats(autoTrades));
+}
+
+// ── Recent trades table ───────────────────────────────────────────────────────
+function statusBadge(t) {
+  const s = (t.status || '').toUpperCase();
+  if (s.startsWith('TP')) return `<span class="badge tp">${s}</span>`;
+  if (s === 'SL')         return `<span class="badge sl">SL</span>`;
+  return `<span class="badge manual">${s || '—'}</span>`;
+}
+
+function renderRecentTrades(trades) {
+  const tbody = document.getElementById('recent-tbody');
+  if (!trades.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:30px">Aucun trade clôturé</td></tr>';
+    return;
+  }
+  tbody.innerHTML = trades.map(t => `
+    <tr>
+      <td>${fmtDate(t.closeMs)}</td>
+      <td><span class="badge ${t.service === 'scalping' ? 'scalp' : 'auto'}">${t.service === 'scalping' ? 'SCALP' : 'AUTO'}</span></td>
+      <td><span class="badge ${t.direction === 'LONG' ? 'long' : 'short'}">${t.direction || '—'}</span></td>
+      <td>${statusBadge(t)}</td>
+      <td>${t.entry ? '$' + Math.round(t.entry).toLocaleString('fr-FR') : '—'}</td>
+      <td><span class="${pnlCls(t.pnl)}" style="font-weight:600">${fmtSign(t.pnl)} $</span></td>
+      <td>${fmtDuration(t.duration)}</td>
+      <td>${t.confidence != null ? t.confidence + '%' : '—'}</td>
+    </tr>
+  `).join('');
+}
+
+// ── Utils ─────────────────────────────────────────────────────────────────────
+function setText(id, val) { const e = document.getElementById(id); if (e) e.textContent = val; }
+function setHtml(id, val) { const e = document.getElementById(id); if (e) e.innerHTML  = val; }
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+loadAll();
+// Auto-refresh every 60 s
+setInterval(loadAll, 60_000);
+</script>
+</body>
+</html>

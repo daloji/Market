@@ -171,6 +171,36 @@ public class ScalpingSignal {
     /** Score from HH/HL/LH/LL pivot analysis on 1m (pivotStrength=3) */
     public int    marketStructureScore;
 
+    // ── 15m Macro Trend (new — v4) ──────────────────────────────────────────
+    /** EMA(20) on 15m candles — macro trend anchor */
+    public double ema20_15m;
+    /** EMA(50) on 15m candles — macro trend baseline */
+    public double ema50_15m;
+    /** RSI(14) on 15m candles — macro momentum */
+    public double rsi14_15m;
+    /** "BULLISH" / "BEARISH" / "NEUTRAL" based on 15m EMA20 vs EMA50 */
+    public String trend15m;
+
+    // ── 5m RSI (new — v4) ────────────────────────────────────────────────────
+    /** RSI(14) on 5m candles — meso momentum */
+    public double rsi14_5m;
+
+    // ── Volume ratio (new — v4) ───────────────────────────────────────────────
+    /** Current bar volume divided by 20-bar average — >1 = above average activity */
+    public double volumeRatio;
+
+    // ── 3-Pillar scores (new — v4) ────────────────────────────────────────────
+    /** Pillar 1: Multi-TF Trend Alignment score (max 40 pts) */
+    public int pillar1Score;
+    /** Pillar 2: Momentum Quality score (max 40 pts) */
+    public int pillar2Score;
+    /** Pillar 3: Volume & Order Flow score (max 25 pts) */
+    public int pillar3Score;
+    /** Number of timeframes (15m/5m/1m) aligned bullish */
+    public int longTfCount;
+    /** Number of timeframes (15m/5m/1m) aligned bearish */
+    public int shortTfCount;
+
     // ── Chart data ───────────────────────────────────────────────────────────
     /** Last 100 1m candles for candlestick chart */
     public List<CandleDTO> candles;
