@@ -222,16 +222,12 @@ class BinanceScalpingTradeServiceTest {
         assertEquals("placed", r.status);
         assertEquals("LONG",   r.direction);
 
-        // Only SL is placed on Binance — TP1/TP2 are managed by Java monitoring
-        ArgumentCaptor<String> typeCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> sideCaptor = ArgumentCaptor.forClass(String.class);
+        // SL: 1 × STOP_MARKET SELL
         verify(futuresService, times(1))
-                .placeCloseOrder(eq("BTCUSDT"), sideCaptor.capture(), typeCaptor.capture(),
-                                 anyDouble(), any(), isNull());
-
-        assertEquals("STOP_MARKET", typeCaptor.getValue(), "Only SL STOP_MARKET placed on Binance");
-        assertEquals("SELL",        sideCaptor.getValue(), "SL close side must be SELL for LONG");
-        verify(futuresService, never()).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+                .placeCloseOrder(eq("BTCUSDT"), eq("SELL"), eq("STOP_MARKET"), anyDouble(), any(), isNull());
+        // TP1 only on Binance (60% qty) — TP2 is Java-monitored
+        verify(futuresService, times(1))
+                .placeCloseOrder(eq("BTCUSDT"), eq("SELL"), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), isNull());
     }
 
     @Test
@@ -260,15 +256,12 @@ class BinanceScalpingTradeServiceTest {
         assertEquals("placed", r.status);
         assertEquals("SHORT",  r.direction);
 
-        ArgumentCaptor<String> typeCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> sideCaptor = ArgumentCaptor.forClass(String.class);
+        // SL: 1 × STOP_MARKET BUY
         verify(futuresService, times(1))
-                .placeCloseOrder(eq("BTCUSDT"), sideCaptor.capture(), typeCaptor.capture(),
-                                 anyDouble(), any(), isNull());
-
-        assertEquals("STOP_MARKET", typeCaptor.getValue(), "Only SL STOP_MARKET placed on Binance");
-        assertEquals("BUY",         sideCaptor.getValue(), "SL close side must be BUY for SHORT");
-        verify(futuresService, never()).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+                .placeCloseOrder(eq("BTCUSDT"), eq("BUY"), eq("STOP_MARKET"), anyDouble(), any(), isNull());
+        // TP1 only on Binance (60% qty) — TP2 is Java-monitored
+        verify(futuresService, times(1))
+                .placeCloseOrder(eq("BTCUSDT"), eq("BUY"), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), isNull());
     }
 
     @Test
@@ -313,8 +306,8 @@ class BinanceScalpingTradeServiceTest {
         // Trade is still "placed" even when SL fails
         assertEquals("placed", r.status, "Trade should be placed even if SL order fails");
         assertTrue(r.message.contains("SL"), "Result message should mention SL");
-        // No TAKE_PROFIT_MARKET orders placed on Binance — TP is Java-managed
-        verify(futuresService, never()).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+        // TP1 order is still attempted even when SL fails
+        verify(futuresService, times(1)).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
     }
 
     @Test
@@ -398,7 +391,7 @@ class BinanceScalpingTradeServiceTest {
         svc.checkAndTrade();
 
         ArgumentCaptor<String> posSideCaptor = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(1))
+        verify(futuresService, times(2))
                 .placeCloseOrder(any(), any(), any(), anyDouble(), any(), posSideCaptor.capture());
 
         assertEquals("LONG", posSideCaptor.getValue(),
@@ -414,7 +407,7 @@ class BinanceScalpingTradeServiceTest {
         svc.checkAndTrade();
 
         ArgumentCaptor<String> posSideCaptor = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(1))
+        verify(futuresService, times(2))
                 .placeCloseOrder(any(), any(), any(), anyDouble(), any(), posSideCaptor.capture());
 
         assertNull(posSideCaptor.getValue(),

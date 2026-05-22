@@ -1,9 +1,9 @@
-# SCALPING ALGO — v4 "Confluence Sniper" (2026-05-21)
+# SCALPING ALGO — v4 "Confluence Sniper" (2026-05-22)
 
 ## Philosophie
 
 Inspiré des traders institutionnels et scalpers professionnels : **3 piliers obligatoires** avant d'entrer.
-Moins de trades mais de meilleure qualité. Jamais trader contre le trend macro (15m).
+Seuils calibrés pour maximiser la fréquence de trades tout en conservant un bon ratio risque/récompense.
 
 ## Architecture
 
@@ -12,27 +12,23 @@ GET /api/crypto/btc/scalping
     ↓
 ScalpingAnalysisService.compute()
     ├─ 1m candles  (200 bars, Binance)
-    ├─ 15m candles (100 bars) — NOUVEAU macro trend
+    ├─ 15m candles (100 bars) — macro trend
     ├─ 5m candles  (100 bars) — meso trend
     │
     ├─ GATE 1 : TTM Squeeze (BB dans KC) → WAIT
-    ├─ GATE 2 : ATR(14) < 0.20%          → WAIT
+    ├─ GATE 2 : ATR(14) < 0.12%          → WAIT
     │
     ├─ PILIER 1 — Multi-TF Trend Alignment (max 40 pts)
-    │   ├─ 15m EMA(20) vs EMA(50)  → +15 pts macro
-    │   ├─ 5m  EMA(9)  vs EMA(21)  → +15 pts meso
+    │   ├─ 15m EMA(20) vs EMA(50)  → +15 pts macro  (seuil 0.01%)
+    │   ├─ 5m  EMA(9)  vs EMA(21)  → +15 pts meso   (seuil 0.01%)
     │   └─ 1m  SMA50 + Supertrend  → +10 pts micro
     │
     ├─ GATE 3 : TF alignment
-    │   ├─ 0/3 ou 1/3 TF alignés   → WAIT absolu
-    │   ├─ 2/3 TF alignés          → seuil 75 pts
-    │   └─ 3/3 TF alignés          → seuil 60 pts
+    │   ├─ TFs conflictuels (LONG+SHORT)  → WAIT absolu
+    │   ├─ 1/3 TF aligné (non-conflit)   → seuil 88 pts  ← NOUVEAU
+    │   ├─ 2/3 TF alignés               → seuil 68 pts
+    │   └─ 3/3 TF alignés               → seuil 60 pts
     │
-    ├─ PILIER 2 — Momentum Quality (max ~40 pts)
-    │   ├─ RSI(14) zone momentum    → +10–20 pts
-    │   ├─ MACD(12,26,9) histogram  → +6–10 pts
-    │   ├─ Stochastic(14,3) crossover → +6–10 pts
-    │   └─ RSI divergence           → +8 pts
     │
     ├─ PILIER 3 — Volume & Order Flow (max 25 pts)
     │   ├─ Taker buy delta          → +8–15 pts
@@ -47,20 +43,24 @@ ScalpingAnalysisService.compute()
 ## Paramètres v4
 
 ```
-ATR gate        : 0.20% minimum (was 0.15%)
-MACD            : (12, 26, 9) standard (was 6,13,4)
-ATR période     : 14 (was 7) — plus stable
-RSI période     : 14 (was 7) — lecture momentum pro
-Stoch           : (14, 3) (was 5,3)
-Supertrend      : (10, 3.0) (was 7,3.0)
+ATR gate        : 0.08% minimum
+MACD            : (12, 26, 9) standard
+ATR période     : 7 (réactif au mouvement récent)
+RSI période     : 14
+Stoch           : (14, 3)
+Supertrend      : (10, 3.0)
+EMA 15m         : seuil 0.01% pour BULLISH/BEARISH (was 0.03%)
+EMA 5m          : seuil 0.01% pour LONG/SHORT      (was 0.02%)
 
 Seuils signal:
   3/3 TF alignés : 60 pts
-  2/3 TF alignés : 75 pts
+  2/3 TF alignés : 68 pts  (was 75)
+  1/3 TF aligné  : 88 pts  (was WAIT)
+  TFs conflictuels: WAIT
 
 TP1 = 1.0×ATR  (60% qty)
 TP2 = 2.0×ATR  (40% qty)
-SL  = 0.6×ATR  (was 0.5×ATR)
+SL  = 0.6×ATR
 R:R = 1.67 (TP1), 3.33 (TP2)
 ```
 
@@ -71,11 +71,13 @@ R:R = 1.67 (TP1), 3.33 (TP2)
    longTfCount  = (15m=BULLISH ? 1:0) + (5m=LONG ? 1:0) + (1m above SMA50 AND ST=LONG ? 1:0)
    shortTfCount = (15m=BEARISH ? 1:0) + (5m=SHORT ? 1:0) + (1m below SMA50 AND ST=SHORT ? 1:0)
 
-2. Si max(longTfCount, shortTfCount) <= 1 → WAIT
+2. Si longTfCount >= 1 ET shortTfCount >= 1 → WAIT (TFs conflictuels)
+   Si longTfCount == 0 ET shortTfCount == 0 → WAIT (tout neutre)
 
-3. Threshold:
+3. Threshold selon direction dominante:
    3/3 → 60 pts
-   2/3 → 75 pts
+   2/3 → 68 pts
+   1/3 → 88 pts (exige momentum+volume très forts)
 
 4. Calculer score direction dominante
    Si score >= threshold → LONG ou SHORT

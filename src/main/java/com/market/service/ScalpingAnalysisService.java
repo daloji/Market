@@ -34,12 +34,13 @@ import java.util.stream.Collectors;
  *
  * Decision thresholds:
  *   3/3 TFs aligned → 60 pts
- *   2/3 TFs aligned → 75 pts
- *   ≤1/3 TF aligned → WAIT (never trade against macro trend)
+ *   2/3 TFs aligned → 68 pts
+ *   1/3 TF aligned (non-conflicting) → 88 pts (very strong momentum required)
+ *   Conflicting TFs (long+short) → WAIT
  *
  * Hard gates:
  *   - TTM Squeeze (BB inside KC) → WAIT
- *   - ATR(14) < 0.20%            → WAIT (insufficient volatility to cover fees)
+ *   - ATR(14) < 0.12%            → WAIT (insufficient volatility to cover fees)
  *
  * TP/SL: TP1=1.0×ATR(60%), TP2=2.0×ATR(40%), SL=0.6×ATR  →  R:R ≈ 1.67/3.33
  */
@@ -130,8 +131,8 @@ public class ScalpingAnalysisService {
                     s.ema20_15m = r2(ta.calculateEMA(c15, 20));
                     s.ema50_15m = r2(ta.calculateEMA(c15, 50));
                     s.rsi14_15m = r1(ta.calculateRSI(c15, 14));
-                    if      (s.ema20_15m > s.ema50_15m * 1.0003) s.trend15m = "BULLISH";
-                    else if (s.ema20_15m < s.ema50_15m * 0.9997) s.trend15m = "BEARISH";
+                    if      (s.ema20_15m > s.ema50_15m * 1.0001) s.trend15m = "BULLISH";
+                    else if (s.ema20_15m < s.ema50_15m * 0.9999) s.trend15m = "BEARISH";
                 }
             } catch (Exception ex) {
                 LOG.debugf("[Scalping] 15m unavailable: %s", ex.getMessage());
@@ -151,8 +152,8 @@ public class ScalpingAnalysisService {
                     s.ema9_5m  = r2(ta.calculateEMA(c5, 9));
                     s.ema21_5m = r2(ta.calculateEMA(c5, 21));
                     s.rsi14_5m = r1(ta.calculateRSI(c5, 14));
-                    if      (s.ema9_5m > s.ema21_5m * 1.0002) s.bias5m = "LONG";
-                    else if (s.ema9_5m < s.ema21_5m * 0.9998) s.bias5m = "SHORT";
+                    if      (s.ema9_5m > s.ema21_5m * 1.0001) s.bias5m = "LONG";
+                    else if (s.ema9_5m < s.ema21_5m * 0.9999) s.bias5m = "SHORT";
                 }
             } catch (Exception ex) {
                 LOG.debugf("[Scalping] 5m unavailable: %s", ex.getMessage());
@@ -181,8 +182,10 @@ public class ScalpingAnalysisService {
             s.ema21    = r2(ta.calculateEMA(closeList, 21));
             s.sma50_1m = n >= 50 ? r2(ta.calculateSMA(closeList, 50)) : r2(ta.calculateSMA(closeList, n));
 
-            // ATR(14) — more stable than ATR(7)
-            s.atr    = ta.computeATR(highs, lows, closes, 14);
+            // ATR — use max(ATR7, ATR14): captures recent spikes (7) or sustained volatility (14)
+            double atr7  = ta.computeATR(highs, lows, closes, 7);
+            double atr14 = ta.computeATR(highs, lows, closes, 14);
+            s.atr    = Math.max(atr7, atr14);
             s.atrPct = r2(s.atr / price * 100);
 
             // Bollinger(20) + Keltner(20, 1.5) → TTM Squeeze
@@ -216,12 +219,12 @@ public class ScalpingAnalysisService {
                 return s;
             }
 
-            // ── GATE 2: ATR minimum 0.20% ─────────────────────────────────────
-            if (s.atrPct < 0.20) {
+            // ── GATE 2: ATR minimum 0.06% ─────────────────────────────────────
+            if (s.atrPct < 0.06) {
                 s.direction  = "WAIT";
                 s.confidence = 0;
                 s.reasoning  = String.format(
-                    "ATR trop bas (%.2f%% < 0.20%%) — volatilité insuffisante pour couvrir frais.", s.atrPct);
+                    "ATR trop bas (%.2f%% < 0.06%%) — volatilité insuffisante pour couvrir frais.", s.atrPct);
                 s.candles    = candles.subList(Math.max(0, n - 100), n);
                 return s;
             }
@@ -354,15 +357,23 @@ public class ScalpingAnalysisService {
                 threshold = 60;
             } else if (s.longTfCount == 2 && s.longTfCount > s.shortTfCount) {
                 tradeDir  = true;
-                threshold = 75;
+                threshold = 68;
             } else if (s.shortTfCount == 2 && s.shortTfCount > s.longTfCount) {
                 tradeDir  = false;
-                threshold = 75;
+                threshold = 68;
+            } else if (s.longTfCount == 1 && s.shortTfCount == 0) {
+                // Single TF aligned, no conflict — very high threshold required
+                tradeDir  = true;
+                threshold = 88;
+            } else if (s.shortTfCount == 1 && s.longTfCount == 0) {
+                // Single TF aligned, no conflict — very high threshold required
+                tradeDir  = false;
+                threshold = 88;
             } else {
-                // Conflicting or neutral TFs — too risky
+                // Conflicting TFs (long + short signals) or all neutral — too risky
                 s.direction  = "WAIT";
                 s.confidence = Math.max(longScore, shortScore);
-                reason.append(String.format("TFs divergents(L:%d S:%d) — WAIT.", s.longTfCount, s.shortTfCount));
+                reason.append(String.format("TFs conflictuels(L:%d S:%d) — WAIT.", s.longTfCount, s.shortTfCount));
                 s.reasoning  = reason.toString();
                 populateTargets(s, price, s.atr);
                 s.candles    = candles.subList(Math.max(0, n - 100), n);
@@ -528,7 +539,7 @@ public class ScalpingAnalysisService {
             }
 
             // ATR bonus for diagnostics (symmetric)
-            s.atrScore = (int) Math.min(10, Math.max(0, (s.atrPct - 0.08) / 0.22 * 10));
+            s.atrScore = (int) Math.min(10, Math.max(0, (s.atrPct - 0.06) / 0.14 * 10));
 
             // Last candle body (small bonus for entry confirmation)
             boolean bullishBody = closes[n - 1] > opens[n - 1];

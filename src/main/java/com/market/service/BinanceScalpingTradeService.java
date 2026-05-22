@@ -415,7 +415,7 @@ public class BinanceScalpingTradeService {
             // Wait for Binance to register the position before placing SL/TP
             try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
 
-            // 4. SL (full qty — reduces as TPs fill)
+            // 4. SL (closePosition=true closes whatever remains after TP1 partial fill)
             String slStatus;
             try {
                 String slResp = futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", slPrice, qtyStr, posSide);
@@ -426,9 +426,15 @@ public class BinanceScalpingTradeService {
                 slStatus = "⚠ SL " + String.format(Locale.US, "%.1f", slPrice) + " | " + e.getMessage();
             }
 
-            // 5. TP1/TP2 are managed by Java monitoring (closeWithMarket) — no Binance algo orders.
-            //    Binance OCO would cancel TP2 when TP1 fires; Java side-steps this by sending
-            //    explicit partial market orders at each TP level.
+            // 5. TP1 on Binance (60% qty) — Binance only supports one TAKE_PROFIT_MARKET per position.
+            //    TP2 (40%) is managed by Java price monitoring → market close when price reaches tp2Price.
+            String qty60Str = String.format(Locale.US, "%.3f", qty60);
+            try {
+                String tp1Resp = futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp1Price, qty60Str, posSide);
+                LOG.infof("[Scalping] TP1 order réponse: %s", tp1Resp);
+            } catch (Exception e) {
+                LOG.warnf("[Scalping] TP1 Binance échoué (Java monitoring actif): %s", e.getMessage());
+            }
 
             // 6. Activate internal tracking
             activeDir        = dir;
