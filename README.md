@@ -479,6 +479,8 @@ market.binance.futures.auto-trade.daily-loss-limit=100
 
 Onglet **Scalping** dans `bitcoin.html` — bot de scalping ultra-court terme sur BTC/USDT Futures, entièrement indépendant du bot swing.
 
+Spec complète : **[SCALPING_ALGO.md](SCALPING_ALGO.md)**
+
 ---
 
 ### 🏗️ Architecture du scalping
@@ -487,148 +489,83 @@ Onglet **Scalping** dans `bitcoin.html` — bot de scalping ultra-court terme su
 MarketScheduler (@Scheduled toutes les minutes)
          │
          ▼
-ScalpingAnalysisService  ──→  ScalpingSignal (LONG / SHORT / WAIT + confidence 0–100)
+ScalpingAnalysisService.getSignal()
+   ├─ 200 bougies 1m + 100 bougies 5m + 100 bougies 15m
+   ├─ GATE 1 : TTM Squeeze (BB dans KC) → WAIT
+   ├─ GATE 2 : ATR < 0.20%             → WAIT
+   ├─ PILIER 1 : Multi-TF alignment (15m/5m/1m) — max 40 pts
+   ├─ GATE 3 : ≤1/3 TF alignés ou conflictuels  → WAIT absolu
+   ├─ PILIER 2 : Momentum Quality (RSI/MACD/Stoch/Supertrend) — max 40 pts
+   └─ PILIER 3 : Volume & Order Flow (CVD/delta/ratio) — max 25 pts
+         │
+         ▼  ScalpingSignal (LONG / SHORT / WAIT + confidence + tous indicateurs)
          │
          ▼
-BinanceScalpingTradeService
-   ├─ Gates (non configuré, désactivé, WAIT, conf < seuil, cooldown, position Binance ouverte)
-   ├─ SL/TP monitor (surveille la position active à chaque tick)
-   └─ execute()
-        ├─ cancelAllOrders
-        ├─ setLeverage
-        ├─ placeMarketOrder  (entrée BUY/SELL)
-        ├─ placeCloseOrder STOP_MARKET          (SL algo Binance)
-        └─ placeCloseOrder TAKE_PROFIT_MARKET   (TP algo Binance)
+BinanceScalpingTradeService.checkAndTrade()
+   ├─ Gates : désactivé · cooldown · loss_streak · low_conf · coordinator · pos_exists
+   ├─ SL/TP monitor (surveille position active à chaque tick)
+   ├─ execute()  — si signal valide et pas de position ouverte
+   │    ├─ ① cancelAllOrders
+   │    ├─ ② setLeverage
+   │    ├─ ③ placeMarketOrder  (BUY/SELL)
+   │    ├─ ④ placeCloseOrder STOP_MARKET        slPrice = filledPx ∓ 0.6×ATR
+   │    └─ ⑤ placeCloseOrder TAKE_PROFIT_MARKET tp1 = filledPx ± 1.0×ATR (60% qty)
+   │         TP2 (40% qty) → surveillé côté Java (closeWithMarket à l'atteinte)
+   │
+   └─ persistSignalLog() → scalping_signal_log (chaque décision, quelle qu'elle soit)
          │
          ▼
-ScalpingTrade (JPA → table scalping_trade)  ←─ persisté à l'ouverture, mis à jour à la clôture
+ScalpingTrade (scalping_trade)  — persisté à l'ouverture, mis à jour à la clôture
+ScalpingTradeLog (scalping_signal_log)  — snapshot complet signal + outcome, toutes les minutes
 ```
 
 ---
 
-### 📊 Indicateurs (bougies 1 minute)
+### 📊 Indicateurs v4 (bougies 1 minute + 5m + 15m)
 
-L'analyse utilise **200 bougies 1 minute** (~3h20 de données) récupérées depuis Binance `/api/v3/klines`.
-
-#### RSI(7)
-
-Période courte pour réactivité maximale sur le scalping.
-
-| Valeur | Points LONG | Points SHORT |
-|--------|-------------|--------------|
-| < 30 (survente forte) | +25 | 0 |
-| 30–45 (bas) | +12 | 0 |
-| 45–55 (neutre) | 0 | 0 |
-| 55–70 (haut) | 0 | +12 |
-| > 70 (surachat fort) | 0 | +25 |
-
-#### EMA 5 / 13
-
-Cross sur les moyennes mobiles exponentielles 1 minute.
-
-| Configuration | Points LONG | Points SHORT |
-|---------------|-------------|--------------|
-| `prix > EMA5 > EMA13` (alignement haussier parfait) | +25 | 0 |
-| `prix < EMA5 < EMA13` (alignement baissier parfait) | 0 | +25 |
-| `prix > EMA13` seulement | +10 | 0 |
-| `prix < EMA13` seulement | 0 | +10 |
-
-#### MACD(6, 13, 4)
-
-MACD rapide adapté au 1 minute — calcul exact par séries EMA glissantes.
-
-| Histogramme | Points LONG | Points SHORT |
-|-------------|-------------|--------------|
-| > 0 (momentum haussier) | +25 | 0 |
-| < 0 (momentum baissier) | 0 | +25 |
-
-#### Volume Delta
-
-Ratio `takerBuyVolume / totalVolume` sur les 20 dernières bougies (fourni par Binance, index 9 de la réponse klines).
-
-| Valeur | Interprétation | Points LONG | Points SHORT |
-|--------|----------------|-------------|--------------|
-| > 60% | Forte pression acheteuse | +25 | 0 |
-| 52–60% | Pression acheteuse | +12 | 0 |
-| 48–52% | Équilibre (neutre) | 0 | 0 |
-| 40–48% | Pression vendeuse | 0 | +12 |
-| < 40% | Forte pression vendeuse | 0 | +25 |
-
-#### Stochastique(5, 3)
-
-Confirmation — bonus ajouté au score mais non bloquant.
-
-| Condition | Bonus LONG | Bonus SHORT |
-|-----------|-----------|------------|
-| `%K < 20 ET %D < 20` | +10 | 0 |
-| `%K > 80 ET %D > 80` | 0 | +10 |
-
-#### Bollinger Bands(20, ±2σ)
-
-Utilisé comme **filtre de gate** uniquement : si `BB width < 0.3%` → SQUEEZE → trade bloqué quelle que soit la direction.
+| Indicateur | TF | Rôle |
+|------------|-----|------|
+| EMA(20) vs EMA(50) | 15m | Tendance macro (+15 pts pilier 1) |
+| EMA(9) vs EMA(21) | 5m | Tendance meso (+15 pts pilier 1) |
+| SMA(50) + Supertrend(10,3) | 1m | Tendance micro (+10 pts pilier 1) |
+| RSI(14) — zones 50–70 / 28–48 | 1m | Momentum quality (pilier 2) |
+| MACD(12,26,9) histogramme | 1m | Momentum quality (pilier 2) |
+| Stoch(14,3) | 1m | Momentum quality (pilier 2) |
+| ATR = max(ATR7, ATR14) | 1m | Gate volatilité + calcul TP/SL |
+| Taker buy delta (20 bars) | 1m | Order flow (pilier 3) |
+| CVD slope (20 bars) | 1m | Order flow (pilier 3) |
+| Volume ratio vs avg | 1m | Order flow (pilier 3) |
+| VWAP + bandes σ | 1m | Bonus +5 pts (bounce momentum) |
+| Market Structure (pivots) | 1m | Bonus +5–8 pts |
+| TTM Squeeze (BB dans KC) | 1m | Gate 1 — bloque si vrai |
 
 ---
 
 ### 🎯 Décision de direction
 
 ```
-Score LONG ≥ 65  →  LONG  (confiance = min(100, scoreLong))
-Score SHORT ≥ 65 →  SHORT (confiance = min(100, scoreShort))
-Sinon            →  WAIT  (aucun trade — signal insuffisant)
-```
+Compter TF alignés dans la direction candidate :
+  3/3 → seuil 60 pts
+  2/3 → seuil 75 pts
+  ≤1/3 ou conflictuels → WAIT absolu
 
-Score max théorique : 100 pts (25 RSI + 25 EMA + 25 MACD + 25 Vol Delta).
-Le Stochastique ajoute jusqu'à 10 pts bonus (score peut dépasser 100, plafonné à 100).
+Si score_direction >= seuil → LONG ou SHORT (confidence = min(100, score))
+Sinon → WAIT
+```
 
 ---
 
-### ⚡ Placement du trade — séquence d'ordres
-
-Le placement se fait en **5 étapes séquentielles** avec gestion des erreurs à chaque étape :
+### ⚡ Placement du trade
 
 ```
-① cancelAllOrders("BTCUSDT")
-   └─ Annule tous les ordres ouverts (évite les conflits avec d'anciens SL/TP)
-   └─ Échec non bloquant (warning loggué, on continue)
+TP/SL entièrement ATR-based (recalculés sur le filledPrice réel) :
+  SL  = filledPrice ∓ 0.6 × ATR    (STOP_MARKET Binance, qty totale)
+  TP1 = filledPrice ± 1.0 × ATR    (TAKE_PROFIT_MARKET Binance, 60% qty)
+  TP2 = filledPrice ± 2.0 × ATR    (closeWithMarket Java, 40% qty restante)
+  R:R = 1.67 (TP1) · 3.33 (TP2)
 
-② setLeverage("BTCUSDT", leverage)
-   └─ Applique le levier configuré avant tout ordre
-   └─ Échec bloquant → trade annulé
-
-③ placeMarketOrder("BTCUSDT", side, qty, positionSide?)
-   └─ LONG → side = "BUY"  · SHORT → side = "SELL"
-   └─ qty = floor((amountUsdt × leverage / prix) × 1000) / 1000  (min 0.001)
-   └─ En mode Hedge → positionSide = "LONG" ou "SHORT"
-   └─ Prix réel d'exécution (avgPrice) récupéré pour recalculer SL/TP
-   └─ Échec bloquant → trade annulé
-
-                    ⏱ pause 1500ms (Binance enregistre la position)
-
-④ placeCloseOrder("BTCUSDT", closeSide, "STOP_MARKET", slPrice, qty, positionSide?)
-   └─ LONG → closeSide = "SELL" · SHORT → closeSide = "BUY"
-   └─ slPrice = filledPrice × (1 − SL%) pour LONG
-   └─ slPrice = filledPrice × (1 + SL%) pour SHORT
-   └─ Échec non bloquant → SL absent, trade quand même actif (⚠ dans le résumé)
-
-⑤ placeCloseOrder("BTCUSDT", closeSide, "TAKE_PROFIT_MARKET", tpPrice, qty, positionSide?)
-   └─ tpPrice = filledPrice × (1 + TP%) pour LONG
-   └─ tpPrice = filledPrice × (1 − TP%) pour SHORT
-   └─ Échec non bloquant → TP absent, trade quand même actif (⚠ dans le résumé)
-```
-
-**Calcul de la quantité :**
-```
-rawQty = (amountUsdt × leverage) / prix
-qty    = floor(rawQty × 1000) / 1000   ← arrondi au 0.001 BTC inférieur
-qty    = max(0.001, qty)               ← minimum Binance
-```
-
-**Exemple avec 20 USDT, ×10, BTC à 95 000 $ :**
-```
-rawQty = (20 × 10) / 95 000 = 0.002105
-qty    = floor(0.002105 × 1000) / 1000 = 0.002 BTC
-SL (0.15%) = 95 000 × (1 − 0.0015) = 94 857.5
-TP (0.30%) = 95 000 × (1 + 0.003)  = 95 285.0
+Quantité : floor((amountUsdt × leverage / filledPrice) × 1000) / 1000, min 0.001 BTC
+canSplit  : qty >= 0.002 → double TP · sinon single-TP automatique
 ```
 
 ---
@@ -637,17 +574,19 @@ TP (0.30%) = 95 000 × (1 + 0.003)  = 95 285.0
 
 | Événement | Action |
 |-----------|--------|
-| SL/TP algo Binance déclenché | Binance ferme la position automatiquement · l'app détecte -2022 ou -4003 au prochain cycle → nettoyage silencieux |
-| SL/TP interne déclenché | `closeWithMarket(reduceOnly)` → DB fermé · si -2022/-4003 : déjà fermé → nettoyage |
-| Fermeture manuelle | `POST /api/scalping/close` → `closeWithMarket()` → DB fermé |
-| Redémarrage | Restaure depuis DB → vérifie `positionAmt` sur `/fapi/v2/positionRisk` → si absent : marque `MANUAL` · si présent : restaure avec `qty` réel Binance |
+| TP1 atteint (Java monitor) | `closeWithMarket` 60% qty, lock PnL partiel, trailing vers TP2 |
+| TP2 atteint (Java monitor) | `closeWithMarket` 40% restant |
+| SL algo Binance déclenché | Binance ferme · Java détecte `positionAmt=0` → `reconcileClosedPosition()` → `fetchLastBinanceFillPrice()` → P&L réel |
+| Fermeture manuelle | `POST /api/scalping/sync` ou close direct |
+| Redémarrage | Restaure depuis DB → vérifie `positionAmt` Binance → marque `MANUAL` si absent |
+| 2 SL consécutifs | Pause `loss_streak` 30 min automatique |
 
-**Codes d'erreur traités silencieusement :**
+**Codes Binance traités silencieusement :**
 
 | Code | Signification | Comportement |
 |------|---------------|--------------|
-| `-2022` | ReduceOnly rejected (position inexistante) | Position considérée déjà fermée → P&L calculé, état nettoyé |
-| `-4003` | Quantity ≤ 0 (qty=0 après redémarrage) | Identique à -2022 |
+| `-2022` | ReduceOnly rejected — position déjà fermée | Considéré fermé → P&L calculé, état nettoyé |
+| `-4003` | Quantity ≤ 0 | Identique à -2022 |
 
 ---
 
@@ -655,29 +594,29 @@ TP (0.30%) = 95 000 × (1 + 0.003)  = 95 285.0
 
 L'onglet Scalping de `bitcoin.html` comprend :
 
-- **Barre de contrôles** : activation/désactivation, configuration TP/SL/levier/montant, balance wallet USDT en temps réel
-- **Position active** : direction, prix d'entrée, TP/SL, P&L non réalisé en live, durée
-- **Graphique 1 minute** (lightweight-charts) avec 100 bougies · autoSize
-- **6 cartes indicateurs** avec tooltips : RSI(7), EMA 5/13, MACD(6,13,4), Vol Delta, Stoch(5,3), Score
-- **Conditions avant trade** : gates bloquantes + indicateurs individuels (✅/❌) avec détails et tooltips
-- **Reasoning** : texte explicatif du signal courant (généré par `ScalpingAnalysisService`)
-- **Historique des trades** : date, direction, confiance, entrée, TP, SL, sortie, durée, statut (🟢 TP / 🔴 SL / ✋ Manuel), P&L · stats win rate et P&L total
-
+- **Barre de contrôles** : activation/désactivation, configuration levier/montant/confiance, balance wallet
+- **Position active** : direction, prix d'entrée, TP1/TP2/SL, P&L non réalisé en live, durée
+- **Graphique 1 minute** (lightweight-charts) avec 100 bougies
+- **Cartes indicateurs** : RSI, EMA alignment, MACD, Vol Delta, ADX/régime, piliers 1/2/3
+- **Conditions avant trade** : gates bloquantes + indicateurs individuels (✅/❌) avec détails
+- **Reasoning** : texte complet du signal (généré par `ScalpingAnalysisService`)
+- **Historique des trades** : date, direction, confiance, entrée, TP1/TP2/SL, sortie, durée, statut, P&L
 
 ---
 
-### 🔧 Configuration scalping (`application.properties`)
+### 🔧 Configuration scalping
 
-```properties
-# Scalping (1 minute, indépendant du bot swing)
-market.binance.scalping.min-confidence=65
-market.binance.scalping.amount-usdt=20
-market.binance.scalping.leverage=10
-market.binance.scalping.tp-pct=0.30
-market.binance.scalping.sl-pct=0.15
+Paramètres par défaut (modifiables en live via `POST /api/scalping/config`) :
+
 ```
-
-Tous les paramètres sont modifiables en live via l'UI sans redémarrage.
+amount-usdt   = 50 USDT
+leverage      = ×10
+min-confidence = 65%
+tp-pct        = 0.30%  (fallback uniquement si sig.atr == 0)
+sl-pct        = 0.15%  (fallback uniquement si sig.atr == 0)
+cooldown      = 10 min
+loss-streak   = pause 30 min après 2 SL consécutifs
+```
 
 ---
 
@@ -689,12 +628,20 @@ Tous les paramètres sont modifiables en live via l'UI sans redémarrage.
 | POST | `/api/scalping/enable` | Activer le bot scalping |
 | POST | `/api/scalping/disable` | Désactiver le bot scalping |
 | POST | `/api/scalping/trigger` | Déclencher manuellement un cycle |
-| POST | `/api/scalping/config` | Modifier TP/SL/levier/montant/confiance en live |
-| POST | `/api/scalping/force-long` | Forcer l'entrée LONG (bypass gates) |
-| POST | `/api/scalping/force-short` | Forcer l'entrée SHORT (bypass gates) |
-| POST | `/api/scalping/close` | Fermer la position active manuellement |
-| GET | `/api/scalping/history` | Historique des trades scalping |
-| GET | `/api/scalping/signal` | Signal courant (RSI, EMA, MACD, score, conditions) |
+| POST | `/api/scalping/config` | Modifier paramètres en live (amount/leverage/minConf/tpPct/slPct) |
+| POST | `/api/scalping/force/{LONG\|SHORT}` | Forcer l'entrée (bypass toutes les gates) |
+| POST | `/api/scalping/sync` | Resynchroniser état interne avec Binance |
+| POST | `/api/scalping/sim-tp1` | Simuler déclenchement TP1 (fermeture partielle 60%) |
+| POST | `/api/scalping/sim-tp2` | Simuler déclenchement TP2 après TP1 |
+| GET | `/api/scalping/diagnose` | Diagnostic complet : toutes les gates + indicateurs |
+| GET | `/api/scalping/history` | Historique trades (in-memory + DB) |
+| GET | `/api/scalping/orders` | Ordres ouverts BTCUSDT sur Binance |
+| GET | `/api/scalping/algo-orders` | Ordres algo SL/TP ouverts sur Binance |
+| GET | `/api/scalping/logs` | Logs de toutes les analyses (WAIT + skipped + placed) |
+| GET | `/api/scalping/logs?outcome=wait` | Filtrer par outcome (wait/placed/cooldown/low_conf…) |
+| GET | `/api/scalping/logs?limit=200` | Augmenter la limite (max 500) |
+| GET | `/api/scalping/logs/{id}` | Log précis par son id |
+| GET | `/api/scalping/logs/trade/{tid}` | Log lié à un tradeId |
 
 ---
 

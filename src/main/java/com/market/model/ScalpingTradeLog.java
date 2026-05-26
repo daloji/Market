@@ -7,37 +7,51 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * Snapshot complet du signal + ordres réels au moment du placement d'un trade scalping.
- * Lié à ScalpingTrade via tradeId. Utilisé pour diagnostiquer les entrées perdantes.
+ * Snapshot complet de chaque cycle d'analyse scalping, quelle que soit la décision.
  *
- * GET /api/scalping/logs           → 50 derniers logs (newest first)
- * GET /api/scalping/logs/{tradeId} → log d'un trade spécifique
+ * outcome : "placed"      — trade ouvert sur Binance
+ *           "wait"        — signal WAIT (ATR gate, TTM Squeeze, TF insuffisants, score bas…)
+ *           "disabled"    — auto-scalping désactivé
+ *           "cooldown"    — cooldown post-trade actif
+ *           "loss_streak" — pause après série de pertes
+ *           "low_conf"    — confiance signal < seuil
+ *           "coordinator" — trade classique bloque le lock
+ *           "pos_exists"  — position Binance déjà ouverte
+ *
+ * GET /api/scalping/logs               → 100 derniers (newest first)
+ * GET /api/scalping/logs?outcome=wait  → filtre par outcome
+ * GET /api/scalping/logs/{id}          → un log par son propre id
+ * GET /api/scalping/logs/trade/{tid}   → log d'un trade précis
  */
 @Entity
-@Table(name = "scalping_trade_log")
+@Table(name = "scalping_signal_log", indexes = {
+    @Index(name = "idx_ssl_logged_at", columnList = "loggedAt DESC"),
+    @Index(name = "idx_ssl_trade_id",  columnList = "tradeId")
+})
 public class ScalpingTradeLog extends PanacheEntity {
 
-    // ── Lien trade ────────────────────────────────────────────────────────────
-    public Long    tradeId;
+    // ── Outcome ───────────────────────────────────────────────────────────────
+    public String  outcome;        // placed | wait | disabled | cooldown | loss_streak | low_conf | coordinator | pos_exists
+    public String  outcomeDetail;  // message lisible (raison complète)
     public Instant loggedAt;
 
-    // ── Décision ─────────────────────────────────────────────────────────────
-    public String direction;
-    public int    confidence;
-    public double entryPrice;
+    // ── Lien trade (set uniquement si outcome=placed) ─────────────────────────
+    public Long    tradeId;
 
-    // ── Niveaux signal vs niveaux réels placés ────────────────────────────────
-    /** TP1 calculé par le signal (1.0×ATR) */
+    // ── Signal ────────────────────────────────────────────────────────────────
+    public String direction;   // LONG | SHORT | WAIT
+    public int    confidence;
+    public double currentPrice;
+
+    // ── Niveaux signal (ATR-based, calculés par ScalpingAnalysisService) ──────
     public double sigTp1;
-    /** TP2 calculé par le signal (2.0×ATR) */
     public double sigTp2;
-    /** SL calculé par le signal (0.6×ATR) */
     public double sigStopLoss;
-    /** TP1 réellement placé sur Binance (recalculé sur fill price) */
+
+    // ── Niveaux réels placés sur Binance (0 si non tradé) ────────────────────
+    public double entryPrice;
     public double placedTp1;
-    /** TP2 réellement suivi en Java */
     public double placedTp2;
-    /** SL réellement placé sur Binance */
     public double placedSl;
 
     // ── Volatilité ───────────────────────────────────────────────────────────
@@ -45,24 +59,24 @@ public class ScalpingTradeLog extends PanacheEntity {
     public double atrPct;
 
     // ── Scores 3 piliers ─────────────────────────────────────────────────────
-    public int pillar1Score;   // Multi-TF Alignment (max 40)
-    public int pillar2Score;   // Momentum Quality  (max 40)
-    public int pillar3Score;   // Volume & Order Flow (max 25)
+    public int pillar1Score;
+    public int pillar2Score;
+    public int pillar3Score;
 
     // ── Alignement multi-TF ──────────────────────────────────────────────────
     public int    longTfCount;
     public int    shortTfCount;
-    public String trend15m;      // BULLISH | BEARISH | NEUTRAL
-    public String bias5m;        // LONG | SHORT | NEUTRAL
+    public String trend15m;             // BULLISH | BEARISH | NEUTRAL
+    public String bias5m;               // LONG | SHORT | NEUTRAL
     public String supertrendDirection;  // 1m micro
 
-    // ── Indicateurs clés 1m ──────────────────────────────────────────────────
-    public double rsi;           // RSI(14) sur 1m
+    // ── Indicateurs 1m ───────────────────────────────────────────────────────
+    public double rsi;
     public double macdHistogram;
     public double adx;
     public double plusDI;
     public double minusDI;
-    public String marketRegime;  // TREND | RANGE | NEUTRAL
+    public String marketRegime;         // TREND | RANGE | NEUTRAL
     public double stochK;
     public double stochD;
     public double vwap;
@@ -76,11 +90,11 @@ public class ScalpingTradeLog extends PanacheEntity {
     public double volumeRatio;
 
     // ── EMAs 1m ──────────────────────────────────────────────────────────────
-    public double ema8;    // champ ema5 dans ScalpingSignal = EMA(8) v4
+    public double ema8;    // ema5 field = EMA(8) en v4
     public double ema13;
     public double ema21;
 
-    // ── Contexte macro (5m/15m) ───────────────────────────────────────────────
+    // ── Contexte 5m / 15m ────────────────────────────────────────────────────
     public double ema9_5m;
     public double ema21_5m;
     public double rsi14_5m;
@@ -96,6 +110,10 @@ public class ScalpingTradeLog extends PanacheEntity {
 
     public static List<ScalpingTradeLog> findRecent(int limit) {
         return find("ORDER BY loggedAt DESC").page(0, limit).list();
+    }
+
+    public static List<ScalpingTradeLog> findRecentByOutcome(String outcome, int limit) {
+        return find("outcome = ?1 ORDER BY loggedAt DESC", outcome).page(0, limit).list();
     }
 
     public static ScalpingTradeLog findByTradeId(long tradeId) {

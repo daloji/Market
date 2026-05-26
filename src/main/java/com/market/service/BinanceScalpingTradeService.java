@@ -270,39 +270,45 @@ public class BinanceScalpingTradeService {
         }
 
         if (!enabled.get()) {
-            return last(ScalpResult.skipped("Auto-scalping désactivé"));
+            return lastAndLog(sig, "disabled",
+                ScalpResult.skipped("Auto-scalping désactivé"));
         }
 
         // ── Cooldown ──────────────────────────────────────────────────────────
         if (lastTradeAt != null) {
             long elapsed = Instant.now().toEpochMilli() - lastTradeAt.toEpochMilli();
             if (elapsed < COOLDOWN_MS) {
-                return last(ScalpResult.skipped(String.format(
-                    "Cooldown — %d min restantes", (COOLDOWN_MS - elapsed) / 60_000 + 1)));
+                return lastAndLog(sig, "cooldown",
+                    ScalpResult.skipped(String.format(
+                        "Cooldown — %d min restantes", (COOLDOWN_MS - elapsed) / 60_000 + 1)));
             }
         }
 
         // ── Loss-streak protection ────────────────────────────────────────────
         if (lossStreakCoolUntil != null && Instant.now().isBefore(lossStreakCoolUntil)) {
             long remaining = (lossStreakCoolUntil.toEpochMilli() - Instant.now().toEpochMilli()) / 60_000 + 1;
-            return last(ScalpResult.skipped(String.format(
-                "Pause série de pertes (%d SL consécutifs) — %d min restantes",
-                consecutiveLosses, remaining)));
+            return lastAndLog(sig, "loss_streak",
+                ScalpResult.skipped(String.format(
+                    "Pause série de pertes (%d SL consécutifs) — %d min restantes",
+                    consecutiveLosses, remaining)));
         }
 
         // ── Signal check ──────────────────────────────────────────────────────
         String dir = sig.direction;
         if ("WAIT".equals(dir) || dir == null) {
-            return last(ScalpResult.skipped("Signal WAIT — conf=" + sig.confidence));
+            return lastAndLog(sig, "wait",
+                ScalpResult.skipped("Signal WAIT — conf=" + sig.confidence));
         }
         if (sig.confidence < getMinConfidence()) {
-            return last(ScalpResult.skipped(
-                String.format("Confiance insuffisante: %d < %d", sig.confidence, getMinConfidence())));
+            return lastAndLog(sig, "low_conf",
+                ScalpResult.skipped(String.format(
+                    "Confiance insuffisante: %d < %d", sig.confidence, getMinConfidence())));
         }
 
         // ── Coordinator: block if auto-trade holds the lock ───────────────────
         if (!coordinator.tryAcquire(BinanceTradeCoordinator.Owner.SCALPING)) {
-            return last(ScalpResult.skipped("Trade classique actif — scalping en attente de clôture"));
+            return lastAndLog(sig, "coordinator",
+                ScalpResult.skipped("Trade classique actif — scalping en attente de clôture"));
         }
 
         // ── Check no existing position ────────────────────────────────────────
@@ -314,7 +320,8 @@ public class BinanceScalpingTradeService {
                 for (com.fasterxml.jackson.databind.JsonNode n : arr) {
                     if (Math.abs(n.path("positionAmt").asDouble(0)) > 0.0001) {
                         coordinator.release(BinanceTradeCoordinator.Owner.SCALPING);
-                        return last(ScalpResult.skipped("Position Binance déjà ouverte"));
+                        return lastAndLog(sig, "pos_exists",
+                            ScalpResult.skipped("Position Binance déjà ouverte"));
                     }
                 }
             }
@@ -471,7 +478,7 @@ public class BinanceScalpingTradeService {
 
             // Persist full signal snapshot for post-mortem analysis
             try {
-                persistTradeLog(trade.dbId, sig, tp1Price, tp2Price, slPrice);
+                persistSignalLog(sig, "placed", null, trade.dbId, filledPx, tp1Price, tp2Price, slPrice);
             } catch (Exception logEx) {
                 LOG.warnf("[Scalping] Log indicateurs non persisté: %s", logEx.getMessage());
             }
@@ -608,77 +615,108 @@ public class BinanceScalpingTradeService {
         return ScalpResult.closed(reason, price, pnl);
     }
 
-    /** Returns the last {@code limit} trade logs from DB (newest first). */
-    public List<ScalpingTradeLog> tradeLogs(int limit) {
-        return ScalpingTradeLog.findRecent(Math.min(limit, 200));
+    // ── Signal analysis logging ───────────────────────────────────────────────
+
+    /** Last {@code limit} signal logs, optionally filtered by outcome. */
+    public List<ScalpingTradeLog> signalLogs(int limit, String outcome) {
+        int cap = Math.min(limit, 500);
+        if (outcome != null && !outcome.isBlank() && !"all".equalsIgnoreCase(outcome)) {
+            return ScalpingTradeLog.findRecentByOutcome(outcome, cap);
+        }
+        return ScalpingTradeLog.findRecent(cap);
     }
 
-    /** Returns the signal log for a specific tradeId, or null. */
-    public ScalpingTradeLog tradeLog(long tradeId) {
+    /** Signal log for a specific log id. */
+    public ScalpingTradeLog signalLogById(long id) {
+        return ScalpingTradeLog.findById(id);
+    }
+
+    /** Signal log linked to a placed trade. */
+    public ScalpingTradeLog signalLogByTradeId(long tradeId) {
         return ScalpingTradeLog.findByTradeId(tradeId);
     }
 
+    /** Convenience wrapper: catches all exceptions so logging never disrupts the trade flow. */
+    private void tryLogAnalysis(ScalpingSignal sig, String outcome, String detail) {
+        if (sig == null) return;
+        try {
+            persistSignalLog(sig, outcome, detail, null, 0, 0, 0, 0);
+        } catch (Exception e) {
+            LOG.warnf("[Scalping] Signal log non persisté (%s): %s", outcome, e.getMessage());
+        }
+    }
+
+    /** Helper: logs the analysis then calls last(r) and returns. */
+    private ScalpResult lastAndLog(ScalpingSignal sig, String outcome, ScalpResult r) {
+        tryLogAnalysis(sig, outcome, r.message);
+        return last(r);
+    }
+
     @Transactional
-    void persistTradeLog(Long tradeId, ScalpingSignal sig, double tp1, double tp2, double sl) {
-        if (tradeId == null) return;
+    void persistSignalLog(ScalpingSignal sig, String outcome, String detail,
+                          Long tradeId, double entryPx, double tp1, double tp2, double sl) {
         ScalpingTradeLog log = new ScalpingTradeLog();
-        log.tradeId     = tradeId;
-        log.loggedAt    = Instant.now();
-        log.direction   = sig.direction;
-        log.confidence  = sig.confidence;
-        log.entryPrice  = sig.currentPrice;
+        log.loggedAt      = Instant.now();
+        log.outcome       = outcome;
+        log.outcomeDetail = detail != null ? detail.substring(0, Math.min(detail.length(), 500)) : null;
+        log.tradeId       = tradeId;
+        // Signal
+        log.direction     = sig.direction;
+        log.confidence    = sig.confidence;
+        log.currentPrice  = sig.currentPrice;
         // Signal-computed levels
-        log.sigTp1      = sig.tp1;
-        log.sigTp2      = sig.tp2;
-        log.sigStopLoss = sig.stopLoss;
-        // Actually-placed levels
-        log.placedTp1   = tp1;
-        log.placedTp2   = tp2;
-        log.placedSl    = sl;
+        log.sigTp1        = sig.tp1;
+        log.sigTp2        = sig.tp2;
+        log.sigStopLoss   = sig.stopLoss;
+        // Placed levels (only set when outcome=placed)
+        log.entryPrice    = entryPx;
+        log.placedTp1     = tp1;
+        log.placedTp2     = tp2;
+        log.placedSl      = sl;
         // Volatility
-        log.atr         = sig.atr;
-        log.atrPct      = sig.atrPct;
+        log.atr           = sig.atr;
+        log.atrPct        = sig.atrPct;
         // Pillar scores
-        log.pillar1Score = sig.pillar1Score;
-        log.pillar2Score = sig.pillar2Score;
-        log.pillar3Score = sig.pillar3Score;
+        log.pillar1Score  = sig.pillar1Score;
+        log.pillar2Score  = sig.pillar2Score;
+        log.pillar3Score  = sig.pillar3Score;
         // TF alignment
-        log.longTfCount  = sig.longTfCount;
-        log.shortTfCount = sig.shortTfCount;
-        log.trend15m     = sig.trend15m;
-        log.bias5m       = sig.bias5m;
+        log.longTfCount        = sig.longTfCount;
+        log.shortTfCount       = sig.shortTfCount;
+        log.trend15m           = sig.trend15m;
+        log.bias5m             = sig.bias5m;
         log.supertrendDirection = sig.supertrendDirection;
         // 1m indicators
-        log.rsi         = sig.rsi7;
-        log.macdHistogram = sig.macdHistogram;
-        log.adx         = sig.adx;
-        log.plusDI      = sig.plusDI;
-        log.minusDI     = sig.minusDI;
-        log.marketRegime = sig.marketRegime;
-        log.stochK      = sig.stochK;
-        log.stochD      = sig.stochD;
-        log.vwap        = sig.vwap;
-        log.cvdPct      = sig.cvdPct;
-        log.cvdTrend    = sig.cvdTrend;
+        log.rsi              = sig.rsi7;
+        log.macdHistogram    = sig.macdHistogram;
+        log.adx              = sig.adx;
+        log.plusDI           = sig.plusDI;
+        log.minusDI          = sig.minusDI;
+        log.marketRegime     = sig.marketRegime;
+        log.stochK           = sig.stochK;
+        log.stochD           = sig.stochD;
+        log.vwap             = sig.vwap;
+        log.cvdPct           = sig.cvdPct;
+        log.cvdTrend         = sig.cvdTrend;
         log.marketStructure1m = sig.marketStructure1m;
-        log.bbState     = sig.bbState;
-        log.bbWidth     = sig.bbWidth;
+        log.bbState          = sig.bbState;
+        log.bbWidth          = sig.bbWidth;
         log.volumeDeltaPct   = sig.volumeDeltaPct;
         log.volumeDeltaTrend = sig.volumeDeltaTrend;
-        log.volumeRatio = sig.volumeRatio;
+        log.volumeRatio      = sig.volumeRatio;
         // EMAs 1m
-        log.ema8        = sig.ema5;   // field ema5 = EMA(8) in v4
-        log.ema13       = sig.ema13;
-        log.ema21       = sig.ema21;
-        // 5m/15m context
-        log.ema9_5m     = sig.ema9_5m;
-        log.ema21_5m    = sig.ema21_5m;
-        log.rsi14_5m    = sig.rsi14_5m;
-        log.ema20_15m   = sig.ema20_15m;
-        log.ema50_15m   = sig.ema50_15m;
-        log.rsi14_15m   = sig.rsi14_15m;
+        log.ema8    = sig.ema5;   // ema5 field = EMA(8) in v4
+        log.ema13   = sig.ema13;
+        log.ema21   = sig.ema21;
+        // 5m / 15m
+        log.ema9_5m   = sig.ema9_5m;
+        log.ema21_5m  = sig.ema21_5m;
+        log.rsi14_5m  = sig.rsi14_5m;
+        log.ema20_15m = sig.ema20_15m;
+        log.ema50_15m = sig.ema50_15m;
+        log.rsi14_15m = sig.rsi14_15m;
         // Full reasoning
-        log.reasoning   = sig.reasoning != null
+        log.reasoning = sig.reasoning != null
             ? sig.reasoning.substring(0, Math.min(sig.reasoning.length(), 3990))
             : null;
         log.persist();

@@ -107,21 +107,38 @@ public class ScalpingResource {
     }
 
     /**
-     * Logs de placement avec snapshot complet des indicateurs.
-     * GET /api/scalping/logs?limit=50
+     * Logs de chaque analyse scalping — WAIT, skipped, placed.
+     * GET /api/scalping/logs?limit=100&outcome=all   → tous les cycles
+     * GET /api/scalping/logs?outcome=wait            → uniquement les WAIT
+     * GET /api/scalping/logs?outcome=placed          → uniquement les trades placés
+     * GET /api/scalping/logs?outcome=low_conf        → signaux rejetés pour confiance
+     * Valeurs outcome: placed | wait | disabled | cooldown | loss_streak | low_conf | coordinator | pos_exists
      */
     @GET @Path("/logs")
-    public java.util.List<ScalpingTradeLog> logs(@QueryParam("limit") @DefaultValue("50") int limit) {
-        return scalping.tradeLogs(limit);
+    public java.util.List<ScalpingTradeLog> logs(
+            @QueryParam("limit")   @DefaultValue("100") int    limit,
+            @QueryParam("outcome") @DefaultValue("all") String outcome) {
+        return scalping.signalLogs(limit, outcome);
     }
 
     /**
-     * Log d'un trade spécifique (par tradeId DB).
-     * GET /api/scalping/logs/{tradeId}
+     * Log par son propre id (colonne id de scalping_signal_log).
+     * GET /api/scalping/logs/{id}
      */
-    @GET @Path("/logs/{tradeId}")
+    @GET @Path("/logs/{id}")
+    public Response logById(@PathParam("id") long id) {
+        ScalpingTradeLog log = scalping.signalLogById(id);
+        if (log == null) return Response.status(404).entity(Map.of("error", "log introuvable pour id=" + id)).build();
+        return Response.ok(log).build();
+    }
+
+    /**
+     * Log lié à un trade précis (tradeId = id de scalping_trade).
+     * GET /api/scalping/logs/trade/{tradeId}
+     */
+    @GET @Path("/logs/trade/{tradeId}")
     public Response logByTradeId(@PathParam("tradeId") long tradeId) {
-        ScalpingTradeLog log = scalping.tradeLog(tradeId);
+        ScalpingTradeLog log = scalping.signalLogByTradeId(tradeId);
         if (log == null) return Response.status(404).entity(Map.of("error", "log introuvable pour tradeId=" + tradeId)).build();
         return Response.ok(log).build();
     }
