@@ -20,7 +20,7 @@ Tests :
 - `BinanceScalpingTradeServiceTest.java` — 29 tests trading
 - `BinanceFuturesServiceTest.java` — 17 tests API
 
-## Paramètres actuels (v4 — 2026-05-21)
+## Paramètres actuels (v4 — 2026-05-26)
 
 ```
 ATR gate       : 0.20% minimum (increased from 0.15%)

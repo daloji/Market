@@ -1,5 +1,6 @@
 package com.market.resource;
 
+import com.market.model.ScalpingTradeLog;
 import com.market.service.BinanceFuturesService;
 import com.market.service.BinanceScalpingTradeService;
 import jakarta.inject.Inject;
@@ -103,6 +104,26 @@ public class ScalpingResource {
     @GET @Path("/history")
     public java.util.List<BinanceScalpingTradeService.ScalpTrade> history() {
         return scalping.history();
+    }
+
+    /**
+     * Logs de placement avec snapshot complet des indicateurs.
+     * GET /api/scalping/logs?limit=50
+     */
+    @GET @Path("/logs")
+    public java.util.List<ScalpingTradeLog> logs(@QueryParam("limit") @DefaultValue("50") int limit) {
+        return scalping.tradeLogs(limit);
+    }
+
+    /**
+     * Log d'un trade spécifique (par tradeId DB).
+     * GET /api/scalping/logs/{tradeId}
+     */
+    @GET @Path("/logs/{tradeId}")
+    public Response logByTradeId(@PathParam("tradeId") long tradeId) {
+        ScalpingTradeLog log = scalping.tradeLog(tradeId);
+        if (log == null) return Response.status(404).entity(Map.of("error", "log introuvable pour tradeId=" + tradeId)).build();
+        return Response.ok(log).build();
     }
 
     /** Returns open orders on Binance for BTCUSDT — useful to verify SL/TP were placed */

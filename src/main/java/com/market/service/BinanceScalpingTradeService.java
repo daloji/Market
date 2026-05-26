@@ -2,6 +2,7 @@ package com.market.service;
 
 import com.market.model.ScalpingSignal;
 import com.market.model.ScalpingTrade;
+import com.market.model.ScalpingTradeLog;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -372,15 +373,16 @@ public class BinanceScalpingTradeService {
         boolean hedgeMode = futuresService.isHedgeMode();
         String  posSide   = hedgeMode ? dir : null;
 
-        // TP / SL prices — prefer ATR-based TP from signal (more precise than % config)
+        // TP / SL prices — ATR-based from signal when available (TP1=1×ATR, TP2=2×ATR, SL=0.6×ATR)
         double tp1Price = (sig.tp1 > 0)
             ? sig.tp1
             : ("LONG".equals(dir) ? r1(entry * (1 + tp / 100)) : r1(entry * (1 - tp / 100)));
         double tp2Price = (sig.tp2 > 0)
             ? sig.tp2
             : ("LONG".equals(dir) ? r1(entry * (1 + 2 * tp / 100)) : r1(entry * (1 - 2 * tp / 100)));
-        double slPrice  = "LONG".equals(dir)
-            ? r1(entry * (1 - sl / 100)) : r1(entry * (1 + sl / 100));
+        double slPrice  = (sig.stopLoss > 0)
+            ? sig.stopLoss
+            : ("LONG".equals(dir) ? r1(entry * (1 - sl / 100)) : r1(entry * (1 + sl / 100)));
 
         // Split qty for internal TP tracking: 60% at TP1, 40% at TP2.
         // Fall back to single-TP when position too small to split (Binance min qty = 0.001 BTC).
@@ -404,13 +406,16 @@ public class BinanceScalpingTradeService {
             log.append(String.format("entrée %.2f. ", filledPx));
             LOG.infof("[Scalping] Market order placé: %s", orderJson);
 
-            // Recalculate SL/TP on filled price
-            tp1Price = (sig.tp1 > 0) ? sig.tp1
+            // Recalculate TP/SL anchored on actual fill price, keeping ATR ratios
+            tp1Price = (sig.atr > 0)
+                ? ("LONG".equals(dir) ? r1(filledPx + 1.0 * sig.atr) : r1(filledPx - 1.0 * sig.atr))
                 : ("LONG".equals(dir) ? r1(filledPx * (1 + tp / 100)) : r1(filledPx * (1 - tp / 100)));
-            tp2Price = (sig.tp2 > 0) ? sig.tp2
+            tp2Price = (sig.atr > 0)
+                ? ("LONG".equals(dir) ? r1(filledPx + 2.0 * sig.atr) : r1(filledPx - 2.0 * sig.atr))
                 : ("LONG".equals(dir) ? r1(filledPx * (1 + 2 * tp / 100)) : r1(filledPx * (1 - 2 * tp / 100)));
-            slPrice = "LONG".equals(dir)
-                ? r1(filledPx * (1 - sl / 100)) : r1(filledPx * (1 + sl / 100));
+            slPrice = (sig.atr > 0)
+                ? ("LONG".equals(dir) ? r1(filledPx - 0.6 * sig.atr) : r1(filledPx + 0.6 * sig.atr))
+                : ("LONG".equals(dir) ? r1(filledPx * (1 - sl / 100)) : r1(filledPx * (1 + sl / 100)));
 
             // Wait for Binance to register the position before placing SL/TP
             try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
@@ -463,6 +468,13 @@ public class BinanceScalpingTradeService {
             trade.dbId       = persistTrade(trade);
             tradeHistory.addLast(trade);
             if (tradeHistory.size() > MAX_HISTORY) tradeHistory.pollFirst();
+
+            // Persist full signal snapshot for post-mortem analysis
+            try {
+                persistTradeLog(trade.dbId, sig, tp1Price, tp2Price, slPrice);
+            } catch (Exception logEx) {
+                LOG.warnf("[Scalping] Log indicateurs non persisté: %s", logEx.getMessage());
+            }
 
             String summary = canSplit
                 ? String.format("%s @ %.1f | %s | TP1=%.1f TP2=%.1f (Java)", dir, filledPx, slStatus, tp1Price, tp2Price)
@@ -594,6 +606,82 @@ public class BinanceScalpingTradeService {
         }
         clearActive();
         return ScalpResult.closed(reason, price, pnl);
+    }
+
+    /** Returns the last {@code limit} trade logs from DB (newest first). */
+    public List<ScalpingTradeLog> tradeLogs(int limit) {
+        return ScalpingTradeLog.findRecent(Math.min(limit, 200));
+    }
+
+    /** Returns the signal log for a specific tradeId, or null. */
+    public ScalpingTradeLog tradeLog(long tradeId) {
+        return ScalpingTradeLog.findByTradeId(tradeId);
+    }
+
+    @Transactional
+    void persistTradeLog(Long tradeId, ScalpingSignal sig, double tp1, double tp2, double sl) {
+        if (tradeId == null) return;
+        ScalpingTradeLog log = new ScalpingTradeLog();
+        log.tradeId     = tradeId;
+        log.loggedAt    = Instant.now();
+        log.direction   = sig.direction;
+        log.confidence  = sig.confidence;
+        log.entryPrice  = sig.currentPrice;
+        // Signal-computed levels
+        log.sigTp1      = sig.tp1;
+        log.sigTp2      = sig.tp2;
+        log.sigStopLoss = sig.stopLoss;
+        // Actually-placed levels
+        log.placedTp1   = tp1;
+        log.placedTp2   = tp2;
+        log.placedSl    = sl;
+        // Volatility
+        log.atr         = sig.atr;
+        log.atrPct      = sig.atrPct;
+        // Pillar scores
+        log.pillar1Score = sig.pillar1Score;
+        log.pillar2Score = sig.pillar2Score;
+        log.pillar3Score = sig.pillar3Score;
+        // TF alignment
+        log.longTfCount  = sig.longTfCount;
+        log.shortTfCount = sig.shortTfCount;
+        log.trend15m     = sig.trend15m;
+        log.bias5m       = sig.bias5m;
+        log.supertrendDirection = sig.supertrendDirection;
+        // 1m indicators
+        log.rsi         = sig.rsi7;
+        log.macdHistogram = sig.macdHistogram;
+        log.adx         = sig.adx;
+        log.plusDI      = sig.plusDI;
+        log.minusDI     = sig.minusDI;
+        log.marketRegime = sig.marketRegime;
+        log.stochK      = sig.stochK;
+        log.stochD      = sig.stochD;
+        log.vwap        = sig.vwap;
+        log.cvdPct      = sig.cvdPct;
+        log.cvdTrend    = sig.cvdTrend;
+        log.marketStructure1m = sig.marketStructure1m;
+        log.bbState     = sig.bbState;
+        log.bbWidth     = sig.bbWidth;
+        log.volumeDeltaPct   = sig.volumeDeltaPct;
+        log.volumeDeltaTrend = sig.volumeDeltaTrend;
+        log.volumeRatio = sig.volumeRatio;
+        // EMAs 1m
+        log.ema8        = sig.ema5;   // field ema5 = EMA(8) in v4
+        log.ema13       = sig.ema13;
+        log.ema21       = sig.ema21;
+        // 5m/15m context
+        log.ema9_5m     = sig.ema9_5m;
+        log.ema21_5m    = sig.ema21_5m;
+        log.rsi14_5m    = sig.rsi14_5m;
+        log.ema20_15m   = sig.ema20_15m;
+        log.ema50_15m   = sig.ema50_15m;
+        log.rsi14_15m   = sig.rsi14_15m;
+        // Full reasoning
+        log.reasoning   = sig.reasoning != null
+            ? sig.reasoning.substring(0, Math.min(sig.reasoning.length(), 3990))
+            : null;
+        log.persist();
     }
 
     @Transactional

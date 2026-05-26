@@ -219,12 +219,12 @@ public class ScalpingAnalysisService {
                 return s;
             }
 
-            // ── GATE 2: ATR minimum 0.06% ─────────────────────────────────────
-            if (s.atrPct < 0.06) {
+            // ── GATE 2: ATR minimum 0.20% ─────────────────────────────────────
+            if (s.atrPct < 0.20) {
                 s.direction  = "WAIT";
                 s.confidence = 0;
                 s.reasoning  = String.format(
-                    "ATR trop bas (%.2f%% < 0.06%%) — volatilité insuffisante pour couvrir frais.", s.atrPct);
+                    "ATR trop bas (%.2f%% < 0.20%%) — volatilité insuffisante pour couvrir frais.", s.atrPct);
                 s.candles    = candles.subList(Math.max(0, n - 100), n);
                 return s;
             }
@@ -357,23 +357,15 @@ public class ScalpingAnalysisService {
                 threshold = 60;
             } else if (s.longTfCount == 2 && s.longTfCount > s.shortTfCount) {
                 tradeDir  = true;
-                threshold = 68;
+                threshold = 75;
             } else if (s.shortTfCount == 2 && s.shortTfCount > s.longTfCount) {
                 tradeDir  = false;
-                threshold = 68;
-            } else if (s.longTfCount == 1 && s.shortTfCount == 0) {
-                // Single TF aligned, no conflict — very high threshold required
-                tradeDir  = true;
-                threshold = 88;
-            } else if (s.shortTfCount == 1 && s.longTfCount == 0) {
-                // Single TF aligned, no conflict — very high threshold required
-                tradeDir  = false;
-                threshold = 88;
+                threshold = 75;
             } else {
-                // Conflicting TFs (long + short signals) or all neutral — too risky
+                // ≤1/3 TF aligné ou TFs conflictuels — WAIT absolu (spec v4)
                 s.direction  = "WAIT";
                 s.confidence = Math.max(longScore, shortScore);
-                reason.append(String.format("TFs conflictuels(L:%d S:%d) — WAIT.", s.longTfCount, s.shortTfCount));
+                reason.append(String.format("TFs insuffisants(L:%d S:%d) — WAIT absolu.", s.longTfCount, s.shortTfCount));
                 s.reasoning  = reason.toString();
                 populateTargets(s, price, s.atr);
                 s.candles    = candles.subList(Math.max(0, n - 100), n);
@@ -539,7 +531,7 @@ public class ScalpingAnalysisService {
             }
 
             // ATR bonus for diagnostics (symmetric)
-            s.atrScore = (int) Math.min(10, Math.max(0, (s.atrPct - 0.06) / 0.14 * 10));
+            s.atrScore = (int) Math.min(10, Math.max(0, (s.atrPct - 0.20) / 0.30 * 10));
 
             // Last candle body (small bonus for entry confirmation)
             boolean bullishBody = closes[n - 1] > opens[n - 1];
