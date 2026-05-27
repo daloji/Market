@@ -11,6 +11,7 @@ import org.jboss.logging.Logger;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -219,12 +220,30 @@ public class ScalpingAnalysisService {
                 return s;
             }
 
-            // ── GATE 2: ATR minimum 0.20% ─────────────────────────────────────
-            if (s.atrPct < 0.20) {
+            // ── GATE 2: ATR adaptatif ────────────────────────────────────────────
+            // Gate = max(0.015% plancher, médiane TR50 × 30%)
+            // S'ajuste automatiquement à la volatilité récente du marché
+            int trCount = Math.min(50, n - 1);
+            double[] trs = new double[trCount];
+            for (int i = 0; i < trCount; i++) {
+                int idx = n - trCount + i;
+                trs[i] = Math.max(highs[idx] - lows[idx],
+                          Math.max(Math.abs(highs[idx] - closes[idx - 1]),
+                                   Math.abs(lows[idx]  - closes[idx - 1])));
+            }
+            Arrays.sort(trs);
+            double medianTR       = trs[trCount / 2];
+            double floorGate      = price * 0.015 / 100;
+            double adaptiveGateAbs = Math.max(floorGate, medianTR * 0.30);
+            double adaptiveGatePct = adaptiveGateAbs / price * 100;
+            s.adaptiveGatePct = r2(adaptiveGatePct);
+
+            if (s.atr < adaptiveGateAbs) {
                 s.direction  = "WAIT";
                 s.confidence = 0;
                 s.reasoning  = String.format(
-                    "ATR trop bas (%.2f%% < 0.20%%) — volatilité insuffisante pour couvrir frais.", s.atrPct);
+                    "ATR trop bas (%.2f USDT < gate adaptatif %.2f USDT — médiane50=%.1f USDT × 30%%, plancher=%.2f USDT).",
+                    s.atr, adaptiveGateAbs, medianTR, floorGate);
                 s.candles    = candles.subList(Math.max(0, n - 100), n);
                 return s;
             }
@@ -530,8 +549,8 @@ public class ScalpingAnalysisService {
                     break;
             }
 
-            // ATR bonus for diagnostics (symmetric)
-            s.atrScore = (int) Math.min(10, Math.max(0, (s.atrPct - 0.20) / 0.30 * 10));
+            // ATR bonus for diagnostics — surplus au-dessus du gate adaptatif
+            s.atrScore = (int) Math.min(10, Math.max(0, (s.atrPct - adaptiveGatePct) / adaptiveGatePct * 10));
 
             // Last candle body (small bonus for entry confirmation)
             boolean bullishBody = closes[n - 1] > opens[n - 1];

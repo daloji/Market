@@ -58,6 +58,8 @@ public class ScalpingSignal {
     public double atr;
     /** ATR as % of price */
     public double atrPct;
+    /** Adaptive ATR gate (% of price): max(0.015%, medianTR50 × 30%) */
+    public double adaptiveGatePct;
     /** Stochastic %K (5,3) */
     public double stochK;
     /** Stochastic %D */

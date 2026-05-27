@@ -327,7 +327,7 @@ class ScalpingAnalysisServiceTest {
 
     @Test
     void getSignal_lowVolatility_atrGateReturnsWait() {
-        // LOW_VOLATILITY: true range only ±8 on basePrice 50000 → ATR ~0.03% < 0.20% gate
+        // LOW_VOLATILITY: TR ≈ 1.5 USDT → ATR ~1.5 USDT < adaptive gate floor 7.5 USDT (0.015% × 50000)
         when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
                 .thenReturn(buildCandles(200, 50_000, CandlePattern.LOW_VOLATILITY));
         ScalpingSignal s = service.getSignal();
@@ -410,11 +410,11 @@ class ScalpingAnalysisServiceTest {
                     break;
 
                 case LOW_VOLATILITY:
-                    // Closes cycle ±100 (BB width ~0.48%) but tiny true range (±8) → ATR ~0.03%
-                    // Designed to pass BB squeeze gate but fire the ATR gate
-                    close  = basePrice + ((i % 20) - 10) * 10.0;
-                    high   = close + 8;
-                    low    = close - 8;
+                    // Slow linear drift (+1 USDT/bar) → TR ≈ 1.5 USDT, KC also narrow → BB wider than KC → TTM squeeze OFF
+                    // ATR ≈ 1.5 USDT < adaptive gate floor 7.5 USDT (0.015% × 50000) → WAIT
+                    close  = basePrice + i;
+                    high   = close + 0.5;
+                    low    = close - 0.5;
                     vol    = 1000;
                     buyVol = 500;
                     break;
