@@ -104,10 +104,12 @@ class BinanceFuturesServiceTest {
         BinanceFuturesService s = new BinanceFuturesService();
         String body = s.buildCloseOrderBody("BTCUSDT", "SELL", "STOP_MARKET", 95000.0, "0.002", null);
 
-        assertTrue(body.contains("algoType=CONDITIONAL"),  "Must include algoType=CONDITIONAL");
-        assertTrue(body.contains("&type=STOP_MARKET"),     "Must use type= (not orderType=)");
-        assertTrue(body.contains("triggerPrice=95000.0"),  "Must use triggerPrice= not stopPrice=");
-        assertTrue(body.contains("closePosition=true"),     "One-Way mode must use closePosition=true");
+        assertTrue(body.contains("algoType=CONDITIONAL"),   "Must include algoType=CONDITIONAL");
+        assertTrue(body.contains("&type=STOP_MARKET"),      "Must use type= (not orderType=)");
+        assertTrue(body.contains("triggerPrice=95000.0"),   "Must use triggerPrice= not stopPrice=");
+        assertTrue(body.contains("quantity=0.002"),         "One-Way SL must include explicit quantity");
+        assertTrue(body.contains("reduceOnly=true"),        "One-Way SL must use reduceOnly=true");
+        assertFalse(body.contains("closePosition"),         "algoOrder API does not support closePosition");
         assertTrue(body.contains("workingType=MARK_PRICE"), "Must request MARK_PRICE");
         assertTrue(body.contains("symbol=BTCUSDT"),         "Must include symbol");
         assertTrue(body.contains("side=SELL"),              "Must include side");
@@ -162,8 +164,10 @@ class BinanceFuturesServiceTest {
         BinanceFuturesService s = new BinanceFuturesService();
         String body = s.buildCloseOrderBody("BTCUSDT", "SELL", "STOP_MARKET", 95000.0, "0.002", "  ");
 
-        assertTrue(body.contains("closePosition=true"), "Blank positionSide must behave as One-Way");
-        assertFalse(body.contains("positionSide"),      "Blank positionSide must NOT appear in body");
+        assertTrue(body.contains("quantity=0.002"),  "Blank positionSide: One-Way SL must include quantity");
+        assertTrue(body.contains("reduceOnly=true"), "Blank positionSide: One-Way SL must use reduceOnly=true");
+        assertFalse(body.contains("closePosition"),  "algoOrder API does not support closePosition");
+        assertFalse(body.contains("positionSide"),   "Blank positionSide must NOT appear in body");
     }
 
     // ── cancelAllAlgoOrders — JSON parsing ────────────────────────────────────
@@ -183,13 +187,17 @@ class BinanceFuturesServiceTest {
 
         assertTrue(sl.contains("&type=STOP_MARKET"),        "SL must use STOP_MARKET");
         assertTrue(tp.contains("&type=TAKE_PROFIT_MARKET"), "TP must use TAKE_PROFIT_MARKET");
-        // SL uses closePosition=true (closes full remaining position)
-        assertTrue(sl.contains("closePosition=true"),  "One-Way SL must use closePosition=true");
-        assertFalse(sl.contains("reduceOnly"),          "One-Way SL must NOT use reduceOnly");
-        // TP uses reduceOnly=true + quantity (partial close for TP1/TP2 split)
-        assertTrue(tp.contains("reduceOnly=true"),      "One-Way TP must use reduceOnly=true");
-        assertTrue(tp.contains("quantity=0.002"),        "One-Way TP must include explicit quantity");
-        assertFalse(tp.contains("closePosition"),        "One-Way TP must NOT use closePosition");
+        // Both SL and TP use reduceOnly=true + quantity (closePosition not supported by algoOrder API)
+        assertTrue(sl.contains("reduceOnly=true"),  "One-Way SL must use reduceOnly=true");
+        assertTrue(sl.contains("quantity=0.002"),   "One-Way SL must include explicit quantity");
+        assertFalse(sl.contains("closePosition"),   "One-Way SL must NOT use closePosition");
+        // TP also uses reduceOnly=true + quantity (partial close for TP1/TP2 split)
+        assertTrue(tp.contains("reduceOnly=true"),  "One-Way TP must use reduceOnly=true");
+        assertTrue(tp.contains("quantity=0.002"),   "One-Way TP must include explicit quantity");
+        assertFalse(tp.contains("closePosition"),   "One-Way TP must NOT use closePosition");
+        // SL and TP are distinguished by their type, not close strategy
+        assertTrue(sl.contains("&type=STOP_MARKET"),        "SL must use STOP_MARKET");
+        assertTrue(tp.contains("&type=TAKE_PROFIT_MARKET"), "TP must use TAKE_PROFIT_MARKET");
     }
 }
 

@@ -190,8 +190,8 @@ public class BinanceFuturesService {
             params += "&quantity=" + quantity
                     + "&positionSide=" + positionSide;
         } else if ("STOP_MARKET".equals(type)) {
-            // One-Way SL: closePosition=true closes whatever remains after partial TP fills
-            params += "&closePosition=true";
+            // One-Way SL: quantity + reduceOnly=true (closePosition not supported by algoOrder API)
+            params += "&quantity=" + quantity + "&reduceOnly=true";
         } else {
             // One-Way TP: reduceOnly=true with explicit partial quantity (TP1=60%, TP2=40%)
             params += "&quantity=" + quantity + "&reduceOnly=true";
@@ -315,6 +315,16 @@ public class BinanceFuturesService {
     public String getRecentUserTrades(String symbol, int limit) throws Exception {
         String params = "symbol=" + symbol + "&limit=" + limit + tsSuffix();
         return get("/fapi/v1/userTrades", params + "&signature=" + sign(params));
+    }
+
+    /**
+     * Queries a specific order by orderId (GET /fapi/v1/order).
+     * Used after a market entry to retrieve the actual avgPrice when the immediate
+     * placeMarketOrder response returns avgPrice=0 (asynchronous fill).
+     */
+    public String getOrder(String symbol, String orderId) throws Exception {
+        String params = "symbol=" + symbol + "&orderId=" + orderId + tsSuffix();
+        return get("/fapi/v1/order", params + "&signature=" + sign(params));
     }
 
     // ── Public market data (no auth, always live fapi.binance.com) ────────────

@@ -145,8 +145,9 @@ class ScalpingAnalysisServiceTest {
 
     @Test
     void getSignal_normalCandles_vwapIsPopulated() {
+        // TRENDING pattern: tight candles (BB>KC → no TTM squeeze) + strong +DM (ADX>>18) → reaches VWAP
         when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
-                .thenReturn(buildCandles(200, 50_000, CandlePattern.VOLATILE));
+                .thenReturn(buildCandles(200, 50_000, CandlePattern.TRENDING));
         ScalpingSignal s = service.getSignal();
         assertTrue(s.vwap > 0, "VWAP must be positive");
         // VWAP must be close to current price range
@@ -342,7 +343,7 @@ class ScalpingAnalysisServiceTest {
 
     enum CandlePattern {
         FLAT, SQUEEZE, VOLATILE, BULLISH, BEARISH, HIGH_BUY_VOLUME, HIGH_SELL_VOLUME,
-        STOCH_OVERSOLD, LOW_VOLATILITY
+        STOCH_OVERSOLD, LOW_VOLATILITY, TRENDING
     }
 
     /**
@@ -417,6 +418,17 @@ class ScalpingAnalysisServiceTest {
                     low    = close - 0.5;
                     vol    = 1000;
                     buyVol = 500;
+                    break;
+
+                case TRENDING:
+                    // Strong uptrend (+20 USDT/bar) with tight candles (±25 USDT range).
+                    // Tight range → ATR ≈ 50 USDT → KC narrow → BB >> KC → no TTM squeeze.
+                    // Consistent +DM >> -DM every bar → ADX ≈ 100 → passes ADX gate.
+                    close  = basePrice + i * 20.0;
+                    high   = close + 25;
+                    low    = close - 25;
+                    vol    = 1500;
+                    buyVol = 1000;
                     break;
 
                 default: // VOLATILE / FLAT

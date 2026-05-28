@@ -262,6 +262,15 @@ public class ScalpingAnalysisService {
             s.minusDI  = r2(adxRes[2]);
             s.marketRegime = s.adx > 25 ? "TREND" : s.adx < 20 ? "RANGE" : "NEUTRAL";
 
+            if (s.adx < 18) {
+                s.direction  = "WAIT";
+                s.confidence = 0;
+                s.reasoning  = String.format("ADX=%.1f — marché en RANGE (seuil 18), scalping suspendu.", s.adx);
+                populateTargets(s, price, s.atr);
+                s.candles = candles.subList(Math.max(0, n - 100), n);
+                return s;
+            }
+
             // VWAP + SD bands
             double[] vwapBands = ta.calculateVWAPWithBands(highs, lows, closes, volumes);
             s.vwap         = r2(vwapBands[0]);

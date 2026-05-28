@@ -28,7 +28,7 @@ import static org.mockito.Mockito.*;
  *  - LONG trade → SL order is STOP_MARKET SELL, TP order is TAKE_PROFIT_MARKET SELL
  *  - SHORT trade → SL order is STOP_MARKET BUY,  TP order is TAKE_PROFIT_MARKET BUY
  *  - All orders use the new algo endpoint (verified through placeCloseOrder call)
- *  - SL/TP placement failures are non-fatal — trade is still tracked
+ *  - SL placement failure is fatal — position is emergency-closed and error returned
  *  - cancelAllOrders is called before every market entry
  */
 @QuarkusTest
@@ -225,8 +225,8 @@ class BinanceScalpingTradeServiceTest {
         // SL: 1 × STOP_MARKET SELL
         verify(futuresService, times(1))
                 .placeCloseOrder(eq("BTCUSDT"), eq("SELL"), eq("STOP_MARKET"), anyDouble(), any(), isNull());
-        // TP1 only on Binance (60% qty) — TP2 is Java-monitored
-        verify(futuresService, times(1))
+        // TP1 (60%) + TP2 (40%) both placed on Binance as independent algo orders
+        verify(futuresService, times(2))
                 .placeCloseOrder(eq("BTCUSDT"), eq("SELL"), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), isNull());
     }
 
@@ -259,8 +259,8 @@ class BinanceScalpingTradeServiceTest {
         // SL: 1 × STOP_MARKET BUY
         verify(futuresService, times(1))
                 .placeCloseOrder(eq("BTCUSDT"), eq("BUY"), eq("STOP_MARKET"), anyDouble(), any(), isNull());
-        // TP1 only on Binance (60% qty) — TP2 is Java-monitored
-        verify(futuresService, times(1))
+        // TP1 (60%) + TP2 (40%) both placed on Binance as independent algo orders
+        verify(futuresService, times(2))
                 .placeCloseOrder(eq("BTCUSDT"), eq("BUY"), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), isNull());
     }
 
@@ -295,19 +295,22 @@ class BinanceScalpingTradeServiceTest {
     // ── SL / TP failure resilience ────────────────────────────────────────────
 
     @Test
-    void checkAndTrade_slOrderFails_tradeStillTracked() throws Exception {
+    void checkAndTrade_slOrderFails_emergencyClose() throws Exception {
         svc.enable();
         when(scalpingService.getSignal()).thenReturn(longSignal(80));
         when(futuresService.placeCloseOrder(any(), any(), eq("STOP_MARKET"), anyDouble(), any(), any()))
                 .thenThrow(new RuntimeException("Binance Futures 400: -4120 algo error"));
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
 
         BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
 
-        // Trade is still "placed" even when SL fails
-        assertEquals("placed", r.status, "Trade should be placed even if SL order fails");
+        // SL failure is now fatal: position is closed immediately and error is returned
+        assertEquals("error", r.status, "SL failure must return error and close position");
         assertTrue(r.message.contains("SL"), "Result message should mention SL");
-        // TP1 order is still attempted even when SL fails
-        verify(futuresService, times(1)).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+        // Emergency market close must be called
+        verify(futuresService, atLeastOnce()).closeWithMarket(eq("BTCUSDT"), eq("SELL"), any(), isNull());
+        // No TP orders should be placed when position is emergency-closed
+        verify(futuresService, never()).placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
     }
 
     @Test
@@ -369,15 +372,17 @@ class BinanceScalpingTradeServiceTest {
     }
 
     @Test
-    void checkAndTrade_slFails_tradeStillTracked() throws Exception {
+    void checkAndTrade_slFails_emergencyCloseAndError() throws Exception {
         svc.enable();
         when(scalpingService.getSignal()).thenReturn(longSignal(80));
         when(futuresService.placeCloseOrder(any(), any(), any(), anyDouble(), any(), any()))
                 .thenThrow(new RuntimeException("network error"));
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
 
         BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
 
-        assertEquals("placed", r.status, "Trade result must be 'placed' even when SL Binance order fails");
+        assertEquals("error", r.status, "SL failure must return error status (position emergency-closed)");
+        verify(futuresService, atLeastOnce()).closeWithMarket(eq("BTCUSDT"), eq("SELL"), any(), isNull());
     }
 
     // ── Hedge mode: positionSide forwarded correctly ──────────────────────────
@@ -391,7 +396,7 @@ class BinanceScalpingTradeServiceTest {
         svc.checkAndTrade();
 
         ArgumentCaptor<String> posSideCaptor = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(2))
+        verify(futuresService, times(3))
                 .placeCloseOrder(any(), any(), any(), anyDouble(), any(), posSideCaptor.capture());
 
         assertEquals("LONG", posSideCaptor.getValue(),
@@ -407,7 +412,7 @@ class BinanceScalpingTradeServiceTest {
         svc.checkAndTrade();
 
         ArgumentCaptor<String> posSideCaptor = ArgumentCaptor.forClass(String.class);
-        verify(futuresService, times(2))
+        verify(futuresService, times(3))
                 .placeCloseOrder(any(), any(), any(), anyDouble(), any(), posSideCaptor.capture());
 
         assertNull(posSideCaptor.getValue(),

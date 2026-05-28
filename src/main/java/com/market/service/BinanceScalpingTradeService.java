@@ -410,8 +410,28 @@ public class BinanceScalpingTradeService {
             // 3. Market entry
             String orderJson  = futuresService.placeMarketOrder(symbol, entrySide, qtyStr, posSide);
             double filledPx   = parsePrice(orderJson, entry);
-            log.append(String.format("entrée %.2f. ", filledPx));
+            String entryOrderId = parseField(orderJson, "orderId");
             LOG.infof("[Scalping] Market order placé: %s", orderJson);
+
+            // Wait for Binance to register the position before querying fill and placing SL/TP
+            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+
+            // Binance often returns avgPrice=0 in the immediate market order response.
+            // Query the order after the sleep to get the actual weighted average fill price.
+            if (filledPx == entry && entryOrderId != null && !entryOrderId.isEmpty()) {
+                try {
+                    String orderStatus = futuresService.getOrder(symbol, entryOrderId);
+                    double realFill = parsePrice(orderStatus, 0);
+                    if (realFill > 0) {
+                        LOG.infof("[Scalping] Fill réel récupéré: %.2f (signal: %.2f, écart: %+.2f)",
+                            realFill, entry, realFill - entry);
+                        filledPx = realFill;
+                    }
+                } catch (Exception e) {
+                    LOG.warnf("[Scalping] Impossible de récupérer fill réel: %s — signal price utilisé", e.getMessage());
+                }
+            }
+            log.append(String.format("entrée %.2f. ", filledPx));
 
             // Recalculate TP/SL anchored on actual fill price, keeping ATR ratios
             tp1Price = (sig.atr > 0)
@@ -424,28 +444,41 @@ public class BinanceScalpingTradeService {
                 ? ("LONG".equals(dir) ? r1(filledPx - 0.6 * sig.atr) : r1(filledPx + 0.6 * sig.atr))
                 : ("LONG".equals(dir) ? r1(filledPx * (1 - sl / 100)) : r1(filledPx * (1 + sl / 100)));
 
-            // Wait for Binance to register the position before placing SL/TP
-            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
-
-            // 4. SL (closePosition=true closes whatever remains after TP1 partial fill)
+            // 4. SL — must succeed, otherwise close immediately (trading without SL is unacceptable)
             String slStatus;
             try {
                 String slResp = futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", slPrice, qtyStr, posSide);
                 LOG.infof("[Scalping] SL order réponse: %s", slResp);
                 slStatus = "✅ SL " + String.format(Locale.US, "%.1f", slPrice);
             } catch (Exception e) {
-                LOG.warnf("[Scalping] SL Binance échoué: %s", e.getMessage());
-                slStatus = "⚠ SL " + String.format(Locale.US, "%.1f", slPrice) + " | " + e.getMessage();
+                LOG.errorf("[Scalping] SL Binance échoué — fermeture urgence: %s", e.getMessage());
+                try {
+                    futuresService.closeWithMarket(symbol, closeSide, qtyStr, posSide);
+                } catch (Exception closeEx) {
+                    LOG.errorf("[Scalping] Fermeture urgence échouée: %s", closeEx.getMessage());
+                }
+                coordinator.release(BinanceTradeCoordinator.Owner.SCALPING);
+                return ScalpResult.error("SL non placé — position fermée par sécurité: " + e.getMessage());
             }
 
-            // 5. TP1 on Binance (60% qty) — Binance only supports one TAKE_PROFIT_MARKET per position.
-            //    TP2 (40%) is managed by Java price monitoring → market close when price reaches tp2Price.
+            // 5. TP1 Binance (60% qty)
             String qty60Str = String.format(Locale.US, "%.3f", qty60);
             try {
                 String tp1Resp = futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp1Price, qty60Str, posSide);
                 LOG.infof("[Scalping] TP1 order réponse: %s", tp1Resp);
             } catch (Exception e) {
                 LOG.warnf("[Scalping] TP1 Binance échoué (Java monitoring actif): %s", e.getMessage());
+            }
+
+            // 6. TP2 Binance (40% qty) — algo orders indépendants, pas d'OCO, TP1 ne cancelle pas TP2
+            if (canSplit && qty40 >= 0.001) {
+                String qty40Str = String.format(Locale.US, "%.3f", qty40);
+                try {
+                    String tp2Resp = futuresService.placeCloseOrder(symbol, closeSide, "TAKE_PROFIT_MARKET", tp2Price, qty40Str, posSide);
+                    LOG.infof("[Scalping] TP2 order réponse: %s", tp2Resp);
+                } catch (Exception e) {
+                    LOG.warnf("[Scalping] TP2 Binance échoué (Java monitoring actif): %s", e.getMessage());
+                }
             }
 
             // 6. Activate internal tracking
@@ -1108,6 +1141,15 @@ public class BinanceScalpingTradeService {
             double v = n.path("avgPrice").asDouble(0);
             return v > 0 ? v : fallback;
         } catch (Exception e) { return fallback; }
+    }
+
+    private String parseField(String json, String field) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode n =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+            String v = n.path(field).asText(null);
+            return (v != null && !v.isEmpty() && !"null".equals(v)) ? v : null;
+        } catch (Exception e) { return null; }
     }
 
     private double r1(double v) { return Math.round(v * 10.0) / 10.0; }
