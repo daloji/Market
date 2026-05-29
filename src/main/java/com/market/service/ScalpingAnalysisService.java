@@ -41,9 +41,10 @@ import java.util.stream.Collectors;
  *
  * Hard gates:
  *   - TTM Squeeze (BB inside KC) → WAIT
- *   - ATR(14) < 0.12%            → WAIT (insufficient volatility to cover fees)
+ *   - ATR(14) < max(0.08%, medianTR50×50%) → WAIT (insufficient volatility)
+ *   - ADX(14) < 22               → WAIT (range market, no trend)
  *
- * TP/SL: TP1=1.0×ATR(60%), TP2=2.0×ATR(40%), SL=0.6×ATR  →  R:R ≈ 1.67/3.33
+ * TP/SL: TP1=1.3×ATR(60%), TP2=2.6×ATR(40%), SL=0.8×ATR  →  R:R ≈ 1.625/3.25
  */
 @ApplicationScoped
 public class ScalpingAnalysisService {
@@ -233,8 +234,8 @@ public class ScalpingAnalysisService {
             }
             Arrays.sort(trs);
             double medianTR       = trs[trCount / 2];
-            double floorGate      = price * 0.015 / 100;
-            double adaptiveGateAbs = Math.max(floorGate, medianTR * 0.30);
+            double floorGate      = price * 0.08 / 100;   // hard floor 0.08% (~58 USDT @ 73k)
+            double adaptiveGateAbs = Math.max(floorGate, medianTR * 0.50);
             double adaptiveGatePct = adaptiveGateAbs / price * 100;
             s.adaptiveGatePct = r2(adaptiveGatePct);
 
@@ -242,7 +243,7 @@ public class ScalpingAnalysisService {
                 s.direction  = "WAIT";
                 s.confidence = 0;
                 s.reasoning  = String.format(
-                    "ATR trop bas (%.2f USDT < gate adaptatif %.2f USDT — médiane50=%.1f USDT × 30%%, plancher=%.2f USDT).",
+                    "ATR trop bas (%.2f USDT < gate adaptatif %.2f USDT — médiane50=%.1f USDT × 50%%, plancher=%.2f USDT).",
                     s.atr, adaptiveGateAbs, medianTR, floorGate);
                 s.candles    = candles.subList(Math.max(0, n - 100), n);
                 return s;
@@ -262,10 +263,10 @@ public class ScalpingAnalysisService {
             s.minusDI  = r2(adxRes[2]);
             s.marketRegime = s.adx > 25 ? "TREND" : s.adx < 20 ? "RANGE" : "NEUTRAL";
 
-            if (s.adx < 18) {
+            if (s.adx < 22) {
                 s.direction  = "WAIT";
                 s.confidence = 0;
-                s.reasoning  = String.format("ADX=%.1f — marché en RANGE (seuil 18), scalping suspendu.", s.adx);
+                s.reasoning  = String.format("ADX=%.1f — marché en RANGE (seuil 22), scalping suspendu.", s.adx);
                 populateTargets(s, price, s.atr);
                 s.candles = candles.subList(Math.max(0, n - 100), n);
                 return s;
@@ -650,17 +651,17 @@ public class ScalpingAnalysisService {
 
     private void populateTargets(ScalpingSignal s, double price, double atr) {
         if ("LONG".equals(s.direction)) {
-            s.tp1      = r1(price + 1.0 * atr);
-            s.tp2      = r1(price + 2.0 * atr);
-            s.stopLoss = r1(price - 0.6 * atr);
+            s.tp1      = r1(price + 1.3 * atr);
+            s.tp2      = r1(price + 2.6 * atr);
+            s.stopLoss = r1(price - 0.8 * atr);
         } else if ("SHORT".equals(s.direction)) {
-            s.tp1      = r1(price - 1.0 * atr);
-            s.tp2      = r1(price - 2.0 * atr);
-            s.stopLoss = r1(price + 0.6 * atr);
+            s.tp1      = r1(price - 1.3 * atr);
+            s.tp2      = r1(price - 2.6 * atr);
+            s.stopLoss = r1(price + 0.8 * atr);
         } else {
-            s.tp1      = r1(price + 1.0 * atr);
-            s.tp2      = r1(price + 2.0 * atr);
-            s.stopLoss = r1(price - 0.6 * atr);
+            s.tp1      = r1(price + 1.3 * atr);
+            s.tp2      = r1(price + 2.6 * atr);
+            s.stopLoss = r1(price - 0.8 * atr);
         }
         s.tp1PnlPct = r2(pnl(price, s.tp1, s.direction));
         s.tp2PnlPct = r2(pnl(price, s.tp2, s.direction));

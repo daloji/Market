@@ -145,7 +145,7 @@ class ScalpingAnalysisServiceTest {
 
     @Test
     void getSignal_normalCandles_vwapIsPopulated() {
-        // TRENDING pattern: tight candles (BB>KC → no TTM squeeze) + strong +DM (ADX>>18) → reaches VWAP
+        // TRENDING pattern: tight candles (BB>KC → no TTM squeeze) + strong +DM (ADX>>22) → reaches VWAP
         when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
                 .thenReturn(buildCandles(200, 50_000, CandlePattern.TRENDING));
         ScalpingSignal s = service.getSignal();
@@ -328,7 +328,7 @@ class ScalpingAnalysisServiceTest {
 
     @Test
     void getSignal_lowVolatility_atrGateReturnsWait() {
-        // LOW_VOLATILITY: TR ≈ 1.5 USDT → ATR ~1.5 USDT < adaptive gate floor 7.5 USDT (0.015% × 50000)
+        // LOW_VOLATILITY: TR ≈ 1.5 USDT → ATR ~1.5 USDT < adaptive gate floor 40 USDT (0.08% × 50000)
         when(binanceClient.getKlines(anyString(), anyString(), anyInt()))
                 .thenReturn(buildCandles(200, 50_000, CandlePattern.LOW_VOLATILITY));
         ScalpingSignal s = service.getSignal();
@@ -412,7 +412,7 @@ class ScalpingAnalysisServiceTest {
 
                 case LOW_VOLATILITY:
                     // Slow linear drift (+1 USDT/bar) → TR ≈ 1.5 USDT, KC also narrow → BB wider than KC → TTM squeeze OFF
-                    // ATR ≈ 1.5 USDT < adaptive gate floor 7.5 USDT (0.015% × 50000) → WAIT
+                    // ATR ≈ 1.5 USDT < adaptive gate floor 40 USDT (0.08% × 50000) → WAIT
                     close  = basePrice + i;
                     high   = close + 0.5;
                     low    = close - 0.5;

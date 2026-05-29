@@ -833,23 +833,29 @@ public class BinanceScalpingTradeService {
 
     /**
      * Infers which order triggered the close based on exit price vs known TP/SL levels.
-     * Used when Binance closes the position asynchronously before the Java monitor cycle sees it.
-     * 0.05% tolerance accounts for slippage and mark-price vs last-price differences.
+     * Uses midpoint classification: whichever target (TP or SL) the fill is closest to wins.
+     * This avoids overlapping tolerance windows when TP-SL distance < slippage tolerance.
      */
     private String inferCloseReason(double price) {
         boolean isLong = "LONG".equals(activeDir);
         double tp1 = activeTp1Price > 0 ? activeTp1Price : activeTpPrice;
         double tp2 = activeTp2Price;
         double sl  = activeSlPrice;
-        double tol = price * 0.0005;
 
         if (activeTp1Hit) {
             // TP1 already done — remaining position closed by TP2 or SL
-            if (tp2 > 0 && (isLong ? price >= tp2 - tol : price <= tp2 + tol)) return "TP2";
-            if (sl  > 0 && (isLong ? price <= sl  + tol : price >= sl  - tol)) return "SL";
+            if (tp2 > 0 && sl > 0) {
+                double mid = (tp2 + sl) / 2.0;
+                return (isLong ? price >= mid : price <= mid) ? "TP2" : "SL";
+            }
+            if (sl > 0) return (isLong ? price <= sl : price >= sl) ? "SL" : "EXT_CLOSE";
         } else {
-            if (tp1 > 0 && (isLong ? price >= tp1 - tol : price <= tp1 + tol)) return "TP";
-            if (sl  > 0 && (isLong ? price <= sl  + tol : price >= sl  - tol)) return "SL";
+            if (tp1 > 0 && sl > 0) {
+                double mid = (tp1 + sl) / 2.0;
+                return (isLong ? price >= mid : price <= mid) ? "TP" : "SL";
+            }
+            if (sl > 0) return (isLong ? price <= sl : price >= sl) ? "SL" : "EXT_CLOSE";
+            if (tp1 > 0) return (isLong ? price >= tp1 : price <= tp1) ? "TP" : "EXT_CLOSE";
         }
         return "EXT_CLOSE";
     }

@@ -898,6 +898,72 @@ class BinanceScalpingTradeServiceTest {
             "PnL after SL must include TP1 gain to reduce loss: " + r.pnl);
     }
 
+    // ── inferCloseReason — midpoint classification ────────────────────────────
+
+    /**
+     * Root-cause of the first live trade bug: SHORT exited at 73492 (above SL 73487.9),
+     * but was classified as "TP" because the old 0.05% tolerance window (36 USDT) was
+     * larger than the TP-SL distance (27 USDT) and TP was checked first.
+     * The midpoint fix: (tp1+sl)/2 = 73474.3 → 73492 > 73474.3 → SL. ✓
+     */
+    @Test
+    void inferCloseReason_short_exitAboveSl_classifiedAsSL_notTP() throws Exception {
+        svc.enable();
+        BinanceScalpingTradeService real = realBean();
+        setField(real, "activeDir",        "SHORT");
+        setField(real, "activeEntryPrice", 73477.7);
+        setField(real, "activeTp1Price",   73460.7);
+        setField(real, "activeTp2Price",   73443.8);
+        setField(real, "activeSlPrice",    73487.9);
+        setField(real, "activeQty",        0.002);
+        setField(real, "activeQty40",      0.001);
+
+        // Position already closed on Binance; Java fill price = 73492.3 (above SL)
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
+        when(futuresService.getRecentUserTrades(any(), anyInt())).thenReturn(
+            "[{\"side\":\"BUY\",\"price\":\"73492.3\",\"qty\":\"0.002\",\"time\":\"9999999999999\"}]");
+
+        ScalpingSignal sig = new ScalpingSignal();
+        sig.currentPrice = 73492.3;
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("closed", r.status);
+        assertEquals("SL", r.message,
+            "Exit at 73492.3 (above SL 73487.9) must be classified as SL, not TP");
+        assertTrue(r.pnl < 0, "SL exit on SHORT must be negative P&L");
+    }
+
+    @Test
+    void inferCloseReason_short_exitBelowMidpoint_classifiedAsTP() throws Exception {
+        svc.enable();
+        BinanceScalpingTradeService real = realBean();
+        setField(real, "activeDir",        "SHORT");
+        setField(real, "activeEntryPrice", 73477.7);
+        setField(real, "activeTp1Price",   73460.7);
+        setField(real, "activeTp2Price",   73443.8);
+        setField(real, "activeSlPrice",    73487.9);
+        setField(real, "activeQty",        0.002);
+        setField(real, "activeQty40",      0.001);
+
+        // Fill at 73461 — just below TP1 (73460.7), well below midpoint (73474.3)
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0\"}]");
+        when(futuresService.getRecentUserTrades(any(), anyInt())).thenReturn(
+            "[{\"side\":\"BUY\",\"price\":\"73461.0\",\"qty\":\"0.002\",\"time\":\"9999999999999\"}]");
+
+        ScalpingSignal sig = new ScalpingSignal();
+        sig.currentPrice = 73461.0;
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("closed", r.status);
+        assertEquals("TP", r.message,
+            "Exit at 73461 (near TP 73460.7, below midpoint 73474.3) must be classified as TP");
+        assertTrue(r.pnl > 0, "TP exit on SHORT must be positive P&L");
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private Object getField(Object target, String name) throws Exception {
