@@ -78,6 +78,8 @@ public class BinanceScalpingTradeService {
     private volatile double  activeQty;
     private volatile double  activeQty40;     // remaining qty after TP1 hit
     private volatile double  activeTp1Pnl;   // PnL locked in at TP1 partial close
+    private volatile double  activeFees;        // commissions accumulées (entry + TP1)
+    private volatile long    activeTp1CloseMs;  // timestamp après fetch TP1 fills (pour filtre reconcile)
     private volatile double  activeEntryPrice;
     private volatile int     activeConf;
     private volatile Instant activeOpenedAt;
@@ -106,6 +108,8 @@ public class BinanceScalpingTradeService {
             t.status     = e.status;
             t.tp1Hit     = e.tp1Hit;
             t.tp1Pnl     = e.tp1Pnl;
+            t.fees       = e.fees;
+            t.pnlNet     = e.pnlNet;
             t.openedAt   = e.openedAt;
             t.closedAt   = e.closedAt;
             t.dbId       = e.id;
@@ -408,6 +412,7 @@ public class BinanceScalpingTradeService {
             futuresService.setLeverage(symbol, lev);
 
             // 3. Market entry
+            long entryMs = System.currentTimeMillis();
             String orderJson  = futuresService.placeMarketOrder(symbol, entrySide, qtyStr, posSide);
             double filledPx   = parsePrice(orderJson, entry);
             String entryOrderId = parseField(orderJson, "orderId");
@@ -433,6 +438,10 @@ public class BinanceScalpingTradeService {
             }
             log.append(String.format("entrée %.2f. ", filledPx));
 
+            // Fetch entry fees
+            FillData entryFill = fetchFillsAfter(entrySide, entryMs);
+            activeFees = entryFill != null ? entryFill.fees : 0;
+
             // Recalculate TP/SL anchored on actual fill price, keeping ATR ratios
             tp1Price = (sig.atr > 0)
                 ? ("LONG".equals(dir) ? r1(filledPx + 1.0 * sig.atr) : r1(filledPx - 1.0 * sig.atr))
@@ -452,11 +461,35 @@ public class BinanceScalpingTradeService {
                 slStatus = "✅ SL " + String.format(Locale.US, "%.1f", slPrice);
             } catch (Exception e) {
                 LOG.errorf("[Scalping] SL Binance échoué — fermeture urgence: %s", e.getMessage());
+                double emergencyExitPx = filledPx;
                 try {
                     futuresService.closeWithMarket(symbol, closeSide, qtyStr, posSide);
+                    try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                    FillData ef = fetchFillsAfter(closeSide, System.currentTimeMillis() - 2000);
+                    if (ef != null && ef.avgPrice > 0) emergencyExitPx = ef.avgPrice;
                 } catch (Exception closeEx) {
                     LOG.errorf("[Scalping] Fermeture urgence échouée: %s", closeEx.getMessage());
                 }
+                double emergencyPnl = ("LONG".equals(dir)
+                    ? (emergencyExitPx - filledPx)
+                    : (filledPx - emergencyExitPx)) * qty;
+                ScalpTrade errTrade = new ScalpTrade();
+                errTrade.direction  = dir;
+                errTrade.entryPrice = filledPx;
+                errTrade.exitPrice  = emergencyExitPx;
+                errTrade.tpPrice    = tp1Price;
+                errTrade.tp2Price   = tp2Price;
+                errTrade.slPrice    = slPrice;
+                errTrade.confidence = sig.confidence;
+                errTrade.openedAt   = Instant.now();
+                errTrade.closedAt   = Instant.now();
+                errTrade.pnl        = emergencyPnl;
+                errTrade.fees       = activeFees;
+                errTrade.pnlNet     = emergencyPnl - activeFees;
+                errTrade.status     = "SL_FAILED";
+                errTrade.dbId       = persistTrade(errTrade);
+                tradeHistory.addLast(errTrade);
+                if (tradeHistory.size() > MAX_HISTORY) tradeHistory.pollFirst();
                 coordinator.release(BinanceTradeCoordinator.Owner.SCALPING);
                 return ScalpResult.error("SL non placé — position fermée par sécurité: " + e.getMessage());
             }
@@ -547,11 +580,12 @@ public class BinanceScalpingTradeService {
 
     /** Partially closes 60% of position at TP1 via market order; keeps 40% tracking for TP2. */
     private ScalpResult closePartial(double price) {
-        boolean isLong = "LONG".equals(activeDir);
-        double  qty60  = activeQty - activeQty40;
+        boolean isLong    = "LONG".equals(activeDir);
+        double  qty60     = activeQty - activeQty40;
         String  closeSide = isLong ? "SELL" : "BUY";
         String  qtyStr    = String.format(Locale.US, "%.3f", qty60);
         String  posSide   = futuresService.isHedgeMode() ? activeDir : null;
+        long    closeMs   = System.currentTimeMillis();
         try {
             futuresService.closeWithMarket("BTCUSDT", closeSide, qtyStr, posSide);
         } catch (Exception e) {
@@ -564,16 +598,20 @@ public class BinanceScalpingTradeService {
                 return ScalpResult.error("TP1 fermeture partielle échouée: " + msg);
             }
         }
+        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+        FillData fill      = fetchFillsAfter(closeSide, closeMs);
+        double actualPrice = (fill != null && fill.avgPrice > 0) ? fill.avgPrice : price;
+        activeFees        += fill != null ? fill.fees : 0;
+        activeTp1CloseMs   = System.currentTimeMillis();
         activeTp1Pnl = isLong
-            ? (price - activeEntryPrice) * qty60
-            : (activeEntryPrice - price) * qty60;
-        LOG.infof("[Scalping] TP1 %s @ %.2f (%.3f BTC, PnL=%.2f$) — trailing 40%% vers TP2=%.1f",
-            activeDir, price, qty60, activeTp1Pnl, activeTp2Price);
-        telegramService.sendCloseAlert(activeDir, "TP1 scalping", price, activeTp1Pnl);
+            ? (actualPrice - activeEntryPrice) * qty60
+            : (activeEntryPrice - actualPrice) * qty60;
+        LOG.infof("[Scalping] TP1 %s @ %.2f fill=%.2f (%.3f BTC, PnL=%.2f$) — trailing 40%% vers TP2=%.1f",
+            activeDir, price, actualPrice, qty60, activeTp1Pnl, activeTp2Price);
+        telegramService.sendCloseAlert(activeDir, "TP1 scalping", actualPrice, activeTp1Pnl);
         activeTp1Hit  = true;
         activeQty     = activeQty40;
         activeTpPrice = activeTp2Price;
-        // Record TP1 in trade history (in-memory + DB)
         for (ScalpTrade t : tradeHistory) {
             if ("OPEN".equals(t.status) && activeDir.equals(t.direction)) {
                 t.tp1Hit = true;
@@ -583,13 +621,14 @@ public class BinanceScalpingTradeService {
             }
         }
         return ScalpResult.skipped(String.format(
-            "TP1 @ %.1f — trailing 40%% vers TP2 @ %.1f", price, activeTp2Price));
+            "TP1 @ %.1f fill=%.1f — trailing 40%% vers TP2 @ %.1f", price, actualPrice, activeTp2Price));
     }
 
     private ScalpResult closePosition(String reason, double price) {
         String closeSide = "LONG".equals(activeDir) ? "SELL" : "BUY";
         String qtyStr    = String.format(Locale.US, "%.3f", activeQty);
         String posSide   = futuresService.isHedgeMode() ? activeDir : null;
+        long   closeMs   = System.currentTimeMillis();
         try {
             futuresService.closeWithMarket("BTCUSDT", closeSide, qtyStr, posSide);
         } catch (Exception e) {
@@ -604,19 +643,25 @@ public class BinanceScalpingTradeService {
                 return ScalpResult.error("Fermeture échouée: " + msg);
             }
         }
-        // Include PnL from TP1 partial close (activeTp1Pnl=0 for full-position closes)
+        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+        FillData fill      = fetchFillsAfter(closeSide, closeMs);
+        double actualPrice = (fill != null && fill.avgPrice > 0) ? fill.avgPrice : price;
+        double closeFees   = fill != null ? fill.fees : 0;
+        double totalFees   = activeFees + closeFees;
         double pnl = ("LONG".equals(activeDir)
-            ? (price - activeEntryPrice) * activeQty
-            : (activeEntryPrice - price) * activeQty)
+            ? (actualPrice - activeEntryPrice) * activeQty
+            : (activeEntryPrice - actualPrice) * activeQty)
             + activeTp1Pnl;
-        String msg = String.format("[Scalping] %s %s @ %.2f (entrée %.2f, PnL=%.2f$)",
-            reason, activeDir, price, activeEntryPrice, pnl);
-        LOG.info(msg);
-        telegramService.sendCloseAlert(activeDir, reason + " scalping", price, pnl);
+        double pnlNet = pnl - totalFees;
+        LOG.infof("[Scalping] %s %s @ %.2f fill=%.2f (entrée %.2f, PnL=%.2f$ net=%.2f$ frais=%.3f$)",
+            reason, activeDir, price, actualPrice, activeEntryPrice, pnl, pnlNet, totalFees);
+        telegramService.sendCloseAlert(activeDir, reason + " scalping", actualPrice, pnlNet);
         for (ScalpTrade t : tradeHistory) {
             if ("OPEN".equals(t.status) && t.direction.equals(activeDir)) {
-                t.exitPrice = price;
+                t.exitPrice = actualPrice;
                 t.pnl       = pnl;
+                t.fees      = totalFees;
+                t.pnlNet    = pnlNet;
                 t.closedAt  = Instant.now();
                 t.tp1Hit    = activeTp1Hit;
                 t.tp1Pnl    = activeTp1Pnl;
@@ -637,7 +682,7 @@ public class BinanceScalpingTradeService {
                 LOG.warnf("[Scalping] ⚠ %d SL consécutifs — pause de 30 min (reprise: %s)",
                     consecutiveLosses, lossStreakCoolUntil);
                 telegramService.sendCloseAlert(activeDir,
-                    String.format("PAUSE %d SL consécutifs", consecutiveLosses), price, pnl);
+                    String.format("PAUSE %d SL consécutifs", consecutiveLosses), actualPrice, pnlNet);
             }
         } else {
             // TP or manual → reset streak
@@ -645,7 +690,7 @@ public class BinanceScalpingTradeService {
             lossStreakCoolUntil = null;
         }
         clearActive();
-        return ScalpResult.closed(reason, price, pnl);
+        return ScalpResult.closed(reason, actualPrice, pnlNet);
     }
 
     // ── Signal analysis logging ───────────────────────────────────────────────
@@ -766,6 +811,11 @@ public class BinanceScalpingTradeService {
         e.confidence = t.confidence;
         e.openedAt   = t.openedAt;
         e.status     = t.status;
+        e.exitPrice  = t.exitPrice;
+        e.closedAt   = t.closedAt;
+        e.pnl        = t.pnl;
+        e.fees       = t.fees;
+        e.pnlNet     = t.pnlNet;
         e.persist();
         return e.id;
     }
@@ -777,6 +827,8 @@ public class BinanceScalpingTradeService {
         if (e == null) return;
         e.exitPrice = t.exitPrice;
         e.pnl       = t.pnl;
+        e.fees      = t.fees;
+        e.pnlNet    = t.pnlNet;
         e.closedAt  = t.closedAt;
         e.status    = t.status;
         e.tp1Hit    = t.tp1Hit;
@@ -793,42 +845,34 @@ public class BinanceScalpingTradeService {
         activeTp2Price   = 0;
         activeTp1Hit     = false;
         activeTp1Pnl     = 0;
+        activeFees       = 0;
+        activeTp1CloseMs = 0;
         activeQty        = 0;
         activeQty40      = 0;
         activeConf       = 0;
         activeOpenedAt   = null;
     }
 
-    /**
-     * Fetches the actual fill price from Binance user trades for the current position's close side.
-     * Falls back to markPrice if the API call fails or no matching trade is found.
-     * This is needed because reconciliation uses the current mark price, which may differ from
-     * the actual SL/TP fill price (e.g. SL fills at $X, price bounces to $Y before next cycle).
-     */
-    private double fetchLastBinanceFillPrice(double markPrice) {
-        if (activeOpenedAt == null || activeDir == null) return markPrice;
+    private FillData fetchFillsAfter(String side, long sinceMs) {
         try {
-            String closeSide = "LONG".equals(activeDir) ? "SELL" : "BUY";
-            String tradesJson = futuresService.getRecentUserTrades("BTCUSDT", 5);
+            String json = futuresService.getRecentUserTrades("BTCUSDT", 10);
             com.fasterxml.jackson.databind.JsonNode trades =
-                new com.fasterxml.jackson.databind.ObjectMapper().readTree(tradesJson);
-            if (trades.isArray()) {
-                for (com.fasterxml.jackson.databind.JsonNode t : trades) {
-                    long   tradeTime = t.path("time").asLong(0);
-                    String side      = t.path("side").asText("");
-                    if (closeSide.equals(side) && tradeTime >= activeOpenedAt.toEpochMilli()) {
-                        double fillPrice = t.path("price").asDouble(0);
-                        if (fillPrice > 0) {
-                            LOG.infof("[Scalping] Fill réel Binance: %.2f (mark=%.2f)", fillPrice, markPrice);
-                            return fillPrice;
-                        }
-                    }
-                }
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+            double totalQty = 0, totalValue = 0, totalFees = 0;
+            for (com.fasterxml.jackson.databind.JsonNode t : trades) {
+                if (!side.equals(t.path("side").asText("")) || t.path("time").asLong(0) < sinceMs) continue;
+                double qty = t.path("qty").asDouble(0);
+                double px  = t.path("price").asDouble(0);
+                if (qty <= 0 || px <= 0) continue;
+                totalQty   += qty;
+                totalValue += px * qty;
+                totalFees  += t.path("commission").asDouble(0);
             }
+            if (totalQty > 0) return new FillData(totalValue / totalQty, totalFees);
         } catch (Exception ex) {
-            LOG.warnf("[Scalping] getRecentUserTrades échoué: %s — mark price utilisé", ex.getMessage());
+            LOG.warnf("[Scalping] fetchFillsAfter(%s) échoué: %s", side, ex.getMessage());
         }
-        return markPrice;
+        return null;
     }
 
     /**
@@ -862,22 +906,32 @@ public class BinanceScalpingTradeService {
 
     /** Called when Binance no longer has the position (SL algo fired, liquidation, external close). */
     private ScalpResult reconcileClosedPosition(double markPrice) {
-        // Use actual Binance fill price for accurate PnL and SL/TP classification.
-        // The mark price at monitoring time can differ from the fill price (e.g. SL fills at $X, price bounces to $Y).
-        double price = fetchLastBinanceFillPrice(markPrice);
-        String reason = inferCloseReason(price);
-        LOG.infof("[Scalping] ⚡ Position %s @ %.1f fermée côté Binance → %s (fill=%.2f mark=%.2f)",
-            activeDir, activeEntryPrice, reason, price, markPrice);
-        // Include PnL from TP1 partial close if it already happened before SL
-        double pnl = ("LONG".equals(activeDir)
+        String closeSide = "LONG".equals(activeDir) ? "SELL" : "BUY";
+        // Filter fills: after TP1 close time if TP1 already hit (avoids double-counting TP1 fees)
+        // Otherwise after trade open time.
+        long sinceMs = (activeTp1Hit && activeTp1CloseMs > 0)
+            ? activeTp1CloseMs
+            : (activeOpenedAt != null ? activeOpenedAt.toEpochMilli() : System.currentTimeMillis() - 300_000);
+        try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+        FillData closeFill = fetchFillsAfter(closeSide, sinceMs);
+        double price       = (closeFill != null && closeFill.avgPrice > 0) ? closeFill.avgPrice : markPrice;
+        double closeFees   = closeFill != null ? closeFill.fees : 0;
+        double totalFees   = activeFees + closeFees;
+        String reason      = inferCloseReason(price);
+        LOG.infof("[Scalping] ⚡ Position %s @ %.1f fermée côté Binance → %s (fill=%.2f mark=%.2f frais=%.3f$)",
+            activeDir, activeEntryPrice, reason, price, markPrice, totalFees);
+        double pnl    = ("LONG".equals(activeDir)
             ? (price - activeEntryPrice) * activeQty
             : (activeEntryPrice - price) * activeQty)
             + activeTp1Pnl;
-        telegramService.sendCloseAlert(activeDir, reason + " scalping", price, pnl);
+        double pnlNet = pnl - totalFees;
+        telegramService.sendCloseAlert(activeDir, reason + " scalping", price, pnlNet);
         for (ScalpTrade t : tradeHistory) {
             if ("OPEN".equals(t.status) && t.direction.equals(activeDir)) {
                 t.exitPrice = price;
                 t.pnl       = pnl;
+                t.fees      = totalFees;
+                t.pnlNet    = pnlNet;
                 t.closedAt  = Instant.now();
                 t.tp1Hit    = activeTp1Hit;
                 t.tp1Pnl    = activeTp1Pnl;
@@ -894,14 +948,14 @@ public class BinanceScalpingTradeService {
                 LOG.warnf("[Scalping] ⚠ %d SL consécutifs — pause de 30 min (reprise: %s)",
                     consecutiveLosses, lossStreakCoolUntil);
                 telegramService.sendCloseAlert(activeDir,
-                    String.format("PAUSE %d SL consécutifs", consecutiveLosses), price, pnl);
+                    String.format("PAUSE %d SL consécutifs", consecutiveLosses), price, pnlNet);
             }
         } else {
             consecutiveLosses = 0;
             lossStreakCoolUntil = null;
         }
         clearActive();
-        return ScalpResult.closed(reason, price, pnl);
+        return ScalpResult.closed(reason, price, pnlNet);
     }
 
     /**
@@ -1136,6 +1190,12 @@ public class BinanceScalpingTradeService {
         public String  blockingReason;
     }
 
+    private static class FillData {
+        final double avgPrice;
+        final double fees;
+        FillData(double p, double f) { this.avgPrice = p; this.fees = f; }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private ScalpResult last(ScalpResult r) { lastResult = r; return r; }
@@ -1204,6 +1264,8 @@ public class BinanceScalpingTradeService {
         public String  status;   // "OPEN" | "TP" | "TP1+TP2" | "SL" | "MANUAL"
         public boolean tp1Hit;   // true when TP1 partial close was executed
         public double  tp1Pnl;  // PnL captured at TP1 (60% of position)
+        public double  fees;
+        public double  pnlNet;
         public Instant openedAt;
         public Instant closedAt;
     }

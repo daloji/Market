@@ -2290,20 +2290,21 @@ function renderScalpingHistory(trades) {
     return;
   }
 
-  // Compute stats
+  // Compute stats — use pnlNet (after fees) when available, else pnl
   let totalPnl = 0, wins = 0, losses = 0, opens = 0;
   trades.forEach(t => {
     if (t.status === 'OPEN') { opens++; return; }
-    totalPnl += (t.pnl || 0);
-    const isWinTrade = (t.status && t.status.startsWith('TP')) || (t.status === 'SL' && (t.pnl||0) > 0);
+    const net = (t.fees > 0 && t.pnlNet != null) ? t.pnlNet : (t.pnl || 0);
+    totalPnl += net;
+    const isWinTrade = (t.status && t.status.startsWith('TP')) || (net > 0);
     if (isWinTrade) wins++;
-    else if (t.status === 'SL') losses++;
+    else losses++;
   });
   const closed   = wins + losses;
   const winRate  = closed > 0 ? (wins / closed * 100) : null;
 
   if (pnlEl) {
-    pnlEl.textContent = `${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)} $`;
+    pnlEl.textContent = `${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)} $ net`;
     pnlEl.style.color = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
   }
   if (statsTR) {
@@ -2316,12 +2317,13 @@ function renderScalpingHistory(trades) {
   }
 
   const STATUS_BADGE = {
-    'TP':       `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP</span>`,
-    'TP1+TP2': `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP1+TP2</span>`,
-    'SL':       `<span style="background:#3a1a1a;color:var(--red);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🔴 SL</span>`,
-    'SL+':      `<span style="background:#2a2000;color:#f7c948;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟡 SL+</span>`,
-    'OPEN':     `<span style="background:#2a2400;color:var(--accent);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏳ OUVERT</span>`,
-    'MANUAL':   `<span style="background:#1e1e2a;color:#8b8bcc;padding:2px 8px;border-radius:4px;font-size:11px">✋ MANUEL</span>`,
+    'TP':        `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP</span>`,
+    'TP1+TP2':   `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP1+TP2</span>`,
+    'SL':        `<span style="background:#3a1a1a;color:var(--red);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🔴 SL</span>`,
+    'SL+':       `<span style="background:#2a2000;color:#f7c948;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟡 SL+</span>`,
+    'SL_FAILED': `<span style="background:#3a1a1a;color:#ff6b35;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⚠ SL FAIL</span>`,
+    'OPEN':      `<span style="background:#2a2400;color:var(--accent);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏳ OUVERT</span>`,
+    'MANUAL':    `<span style="background:#1e1e2a;color:#8b8bcc;padding:2px 8px;border-radius:4px;font-size:11px">✋ MANUEL</span>`,
   };
 
   let html = `<table style="width:100%;border-collapse:collapse;font-size:12px">
@@ -2333,26 +2335,34 @@ function renderScalpingHistory(trades) {
         <th style="padding:4px 8px" data-tooltip="Prix d'entrée du marché au moment de l'ordre">Entrée</th>
         <th style="padding:4px 8px;color:var(--green)" data-tooltip="Take Profit — niveau de clôture gagnante\nOrdre algo Binance">TP</th>
         <th style="padding:4px 8px;color:var(--red)" data-tooltip="Stop Loss — niveau de clôture perdante\nOrdre algo Binance">SL</th>
-        <th style="padding:4px 8px" data-tooltip="Prix effectif de clôture du trade">Sortie</th>
+        <th style="padding:4px 8px" data-tooltip="Prix effectif de clôture du trade (fill réel Binance)">Sortie</th>
         <th style="padding:4px 8px" data-tooltip="Durée totale du trade (de l'ouverture à la clôture)">Durée</th>
-        <th style="padding:4px 8px" data-tooltip="Résultat final du trade\n🟢 TP = objectif atteint\n🔴 SL = stop touché (perte)\n🟡 SL+ = SL touché mais TP1 capturé (gain net)\n✋ Manuel = clôture manuelle\n⏳ Ouvert = en cours">Statut</th>
-        <th style="padding:4px 8px;text-align:right" data-tooltip="Profit ou perte réalisé(e) en USDT\n(hors frais Binance)">P&L</th>
+        <th style="padding:4px 8px" data-tooltip="Résultat final du trade\n🟢 TP = objectif atteint\n🔴 SL = stop touché\n🟡 SL+ = SL après TP1 capturé (gain net)\n⚠ SL FAIL = SL non placé, urgence\n✋ Manuel = clôture manuelle\n⏳ Ouvert = en cours">Statut</th>
+        <th style="padding:4px 8px;text-align:right" data-tooltip="P&amp;L net après frais Binance\nGris = ancien trade (frais non trackés)">P&L net</th>
       </tr>
     </thead>
     <tbody>`;
 
   for (const t of trades) {
-    const isOpen   = t.status === 'OPEN';
-    const isSlPlus = t.status === 'SL' && (t.pnl || 0) > 0;  // SL hit but TP1 captured earlier → net profit
-    const isTp     = (t.status && t.status.startsWith('TP')) || isSlPlus;
+    const isOpen    = t.status === 'OPEN';
+    const hasFeeTrk = t.fees > 0;  // true = nouveau système avec frais trackés
+    const netPnl    = hasFeeTrk ? (t.pnlNet || 0) : (t.pnl || 0);
+    const isSlPlus  = t.status === 'SL' && netPnl > 0;
+    const isTp      = (t.status && t.status.startsWith('TP')) || isSlPlus;
     const statusKey = isSlPlus ? 'SL+' : t.status;
-    const dirColor = t.direction === 'LONG' ? 'var(--green)' : 'var(--red)';
-    const pnlColor = (t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
-    const dateFmt  = t.openedAt ? new Date(t.openedAt).toLocaleString('fr-FR', {dateStyle:'short', timeStyle:'short'}) : '—';
-    const exitFmt  = isOpen ? '—' : (t.exitPrice ? '$' + t.exitPrice.toFixed(1) : '—');
-    const pnlFmt   = isOpen
-      ? '<span style="color:var(--muted)">—</span>'
-      : `<span style="color:${pnlColor};font-weight:700">${(t.pnl||0) >= 0 ? '+' : ''}${(t.pnl||0).toFixed(2)} $</span>`;
+    const dirColor  = t.direction === 'LONG' ? 'var(--green)' : 'var(--red)';
+    const pnlColor  = netPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const dateFmt   = t.openedAt ? new Date(t.openedAt).toLocaleString('fr-FR', {dateStyle:'short', timeStyle:'short'}) : '—';
+    const exitFmt   = isOpen ? '—' : (t.exitPrice ? '$' + t.exitPrice.toFixed(1) : '—');
+    let pnlFmt;
+    if (isOpen) {
+      pnlFmt = '<span style="color:var(--muted)">—</span>';
+    } else if (hasFeeTrk) {
+      const feesStr = `frais -${t.fees.toFixed(3)} $`;
+      pnlFmt = `<span style="color:${pnlColor};font-weight:700" title="Brut: ${(t.pnl||0) >= 0 ? '+' : ''}${(t.pnl||0).toFixed(3)} $ | ${feesStr}">${netPnl >= 0 ? '+' : ''}${netPnl.toFixed(2)} $<br><span style="font-size:10px;color:var(--muted);font-weight:400">-${t.fees.toFixed(3)} frais</span></span>`;
+    } else {
+      pnlFmt = `<span style="color:var(--muted);font-weight:700">${(t.pnl||0) >= 0 ? '+' : ''}${(t.pnl||0).toFixed(2)} $</span>`;
+    }
 
     // Duration
     let dur = '—';
