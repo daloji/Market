@@ -2295,7 +2295,8 @@ function renderScalpingHistory(trades) {
   trades.forEach(t => {
     if (t.status === 'OPEN') { opens++; return; }
     totalPnl += (t.pnl || 0);
-    if (t.status && t.status.startsWith('TP')) wins++;
+    const isWinTrade = (t.status && t.status.startsWith('TP')) || (t.status === 'SL' && (t.pnl||0) > 0);
+    if (isWinTrade) wins++;
     else if (t.status === 'SL') losses++;
   });
   const closed   = wins + losses;
@@ -2318,6 +2319,7 @@ function renderScalpingHistory(trades) {
     'TP':       `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP</span>`,
     'TP1+TP2': `<span style="background:#1a3a1a;color:var(--green);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟢 TP1+TP2</span>`,
     'SL':       `<span style="background:#3a1a1a;color:var(--red);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🔴 SL</span>`,
+    'SL+':      `<span style="background:#2a2000;color:#f7c948;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">🟡 SL+</span>`,
     'OPEN':     `<span style="background:#2a2400;color:var(--accent);padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700">⏳ OUVERT</span>`,
     'MANUAL':   `<span style="background:#1e1e2a;color:#8b8bcc;padding:2px 8px;border-radius:4px;font-size:11px">✋ MANUEL</span>`,
   };
@@ -2333,7 +2335,7 @@ function renderScalpingHistory(trades) {
         <th style="padding:4px 8px;color:var(--red)" data-tooltip="Stop Loss — niveau de clôture perdante\nOrdre algo Binance">SL</th>
         <th style="padding:4px 8px" data-tooltip="Prix effectif de clôture du trade">Sortie</th>
         <th style="padding:4px 8px" data-tooltip="Durée totale du trade (de l'ouverture à la clôture)">Durée</th>
-        <th style="padding:4px 8px" data-tooltip="Résultat final du trade\n🟢 TP = objectif atteint\n🔴 SL = stop touché\n✋ Manuel = clôture manuelle\n⏳ Ouvert = en cours">Statut</th>
+        <th style="padding:4px 8px" data-tooltip="Résultat final du trade\n🟢 TP = objectif atteint\n🔴 SL = stop touché (perte)\n🟡 SL+ = SL touché mais TP1 capturé (gain net)\n✋ Manuel = clôture manuelle\n⏳ Ouvert = en cours">Statut</th>
         <th style="padding:4px 8px;text-align:right" data-tooltip="Profit ou perte réalisé(e) en USDT\n(hors frais Binance)">P&L</th>
       </tr>
     </thead>
@@ -2341,7 +2343,9 @@ function renderScalpingHistory(trades) {
 
   for (const t of trades) {
     const isOpen   = t.status === 'OPEN';
-    const isTp     = t.status && t.status.startsWith('TP');
+    const isSlPlus = t.status === 'SL' && (t.pnl || 0) > 0;  // SL hit but TP1 captured earlier → net profit
+    const isTp     = (t.status && t.status.startsWith('TP')) || isSlPlus;
+    const statusKey = isSlPlus ? 'SL+' : t.status;
     const dirColor = t.direction === 'LONG' ? 'var(--green)' : 'var(--red)';
     const pnlColor = (t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
     const dateFmt  = t.openedAt ? new Date(t.openedAt).toLocaleString('fr-FR', {dateStyle:'short', timeStyle:'short'}) : '—';
@@ -2366,10 +2370,10 @@ function renderScalpingHistory(trades) {
       dur = `⏱ ${h > 0 ? h + 'h' : ''}${m}m${h > 0 ? '' : s + 's'}`;
     }
 
-    const rowBg = isOpen ? 'background:rgba(240,180,41,0.05)'
-                : isTp   ? 'background:rgba(46,160,67,0.04)'
-                :          '';
-    const badge = STATUS_BADGE[t.status] || `<span>${t.status}</span>`;
+    const rowBg = isOpen   ? 'background:rgba(240,180,41,0.05)'
+                : isTp    ? 'background:rgba(46,160,67,0.04)'
+                :            '';
+    const badge = STATUS_BADGE[statusKey] || `<span>${t.status}</span>`;
     html += `<tr style="border-bottom:1px solid var(--border);${rowBg}">
       <td style="padding:5px 8px;color:var(--muted)">${dateFmt}</td>
       <td style="padding:5px 8px;font-weight:700;color:${dirColor}">${t.direction === 'LONG' ? '▲ LONG' : '▼ SHORT'}</td>
