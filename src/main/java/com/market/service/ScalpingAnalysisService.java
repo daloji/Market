@@ -43,6 +43,8 @@ import java.util.stream.Collectors;
  *   - TTM Squeeze (BB inside KC) → WAIT
  *   - ATR(14) < max(0.08%, medianTR50×50%) → WAIT (insufficient volatility)
  *   - ADX(14) < 22               → WAIT (range market, no trend)
+ *   - volumeRatio < 1.0           → WAIT (volume sous la moyenne, pas de carburant)
+ *   - marketStructure1m contredit la direction → WAIT (structure 1m opposée)
  *
  * TP/SL: TP1=1.3×ATR(60%), TP2=2.6×ATR(40%), SL=0.8×ATR  →  R:R ≈ 1.625/3.25
  */
@@ -402,6 +404,29 @@ public class ScalpingAnalysisService {
             }
 
             reason.append(String.format("[%d/3 TFs,seuil=%d] ", tradeDir ? s.longTfCount : s.shortTfCount, threshold));
+
+            // ── Gate: volume insuffisant (volumeRatio < 1.0) ─────────────────
+            if (s.volumeRatio < 1.0) {
+                s.direction  = "WAIT";
+                s.confidence = 0;
+                reason.append(String.format("Vol<moy(%.2f<1.0) — WAIT.", s.volumeRatio));
+                s.reasoning  = reason.toString();
+                populateTargets(s, price, s.atr);
+                s.candles    = candles.subList(Math.max(0, n - 100), n);
+                return s;
+            }
+
+            // ── Gate: structure 1m contredit la direction ─────────────────────
+            if ((!tradeDir && "BULL_TREND".equals(s.marketStructure1m))
+                    || (tradeDir && "BEAR_TREND".equals(s.marketStructure1m))) {
+                s.direction  = "WAIT";
+                s.confidence = 0;
+                reason.append(String.format("MS1m=%s contredit %s — WAIT.", s.marketStructure1m, tradeDir ? "LONG" : "SHORT"));
+                s.reasoning  = reason.toString();
+                populateTargets(s, price, s.atr);
+                s.candles    = candles.subList(Math.max(0, n - 100), n);
+                return s;
+            }
 
             // ══════════════════════════════════════════════════════════════════
             // PILLAR 2 — Momentum Quality (max 40 pts)
