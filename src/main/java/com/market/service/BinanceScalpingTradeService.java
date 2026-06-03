@@ -442,21 +442,28 @@ public class BinanceScalpingTradeService {
             FillData entryFill = fetchFillsAfter(entrySide, entryMs);
             activeFees = entryFill != null ? entryFill.fees : 0;
 
-            // Recalculate TP/SL anchored on actual fill price, keeping ATR ratios
+            // Recalculate TP/SL anchored on actual fill price, keeping ATR ratios (TP1=1.3×, TP2=2.6×, SL=0.8×)
             tp1Price = (sig.atr > 0)
-                ? ("LONG".equals(dir) ? r1(filledPx + 1.0 * sig.atr) : r1(filledPx - 1.0 * sig.atr))
+                ? ("LONG".equals(dir) ? r1(filledPx + 1.3 * sig.atr) : r1(filledPx - 1.3 * sig.atr))
                 : ("LONG".equals(dir) ? r1(filledPx * (1 + tp / 100)) : r1(filledPx * (1 - tp / 100)));
             tp2Price = (sig.atr > 0)
-                ? ("LONG".equals(dir) ? r1(filledPx + 2.0 * sig.atr) : r1(filledPx - 2.0 * sig.atr))
+                ? ("LONG".equals(dir) ? r1(filledPx + 2.6 * sig.atr) : r1(filledPx - 2.6 * sig.atr))
                 : ("LONG".equals(dir) ? r1(filledPx * (1 + 2 * tp / 100)) : r1(filledPx * (1 - 2 * tp / 100)));
             slPrice = (sig.atr > 0)
-                ? ("LONG".equals(dir) ? r1(filledPx - 0.6 * sig.atr) : r1(filledPx + 0.6 * sig.atr))
+                ? ("LONG".equals(dir) ? r1(filledPx - 0.8 * sig.atr) : r1(filledPx + 0.8 * sig.atr))
                 : ("LONG".equals(dir) ? r1(filledPx * (1 - sl / 100)) : r1(filledPx * (1 + sl / 100)));
 
             // 4. SL — must succeed, otherwise close immediately (trading without SL is unacceptable)
             String slStatus;
             try {
-                String slResp = futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", slPrice, qtyStr, posSide);
+                String slResp;
+                try {
+                    slResp = futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", slPrice, qtyStr, posSide);
+                } catch (Exception e1) {
+                    LOG.warnf("[Scalping] SL tentative 1 échouée: %s — retry dans 500ms", e1.getMessage());
+                    try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                    slResp = futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", slPrice, qtyStr, posSide);
+                }
                 LOG.infof("[Scalping] SL order réponse: %s", slResp);
                 slStatus = "✅ SL " + String.format(Locale.US, "%.1f", slPrice);
             } catch (Exception e) {
@@ -601,6 +608,14 @@ public class BinanceScalpingTradeService {
         try { Thread.sleep(500); } catch (InterruptedException ignored) {}
         FillData fill      = fetchFillsAfter(closeSide, closeMs);
         double actualPrice = (fill != null && fill.avgPrice > 0) ? fill.avgPrice : price;
+        // Sanity check: TP1 fill must be in the profitable direction vs entry.
+        // A fill on the wrong side means fetchFillsAfter picked up a concurrent Binance order fill.
+        boolean wrongDirection = isLong ? actualPrice < activeEntryPrice : actualPrice > activeEntryPrice;
+        if (wrongDirection) {
+            LOG.warnf("[Scalping] ⚠ TP1 fill suspect (%.2f vs entry %.2f, diff=%.2f) — fallback sur prix trigger %.2f",
+                actualPrice, activeEntryPrice, actualPrice - activeEntryPrice, price);
+            actualPrice = price;
+        }
         activeFees        += fill != null ? fill.fees : 0;
         activeTp1CloseMs   = System.currentTimeMillis();
         activeTp1Pnl = isLong
