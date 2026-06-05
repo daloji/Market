@@ -453,6 +453,27 @@ public class BinanceScalpingTradeService {
                 ? ("LONG".equals(dir) ? r1(filledPx - 0.8 * sig.atr) : r1(filledPx + 0.8 * sig.atr))
                 : ("LONG".equals(dir) ? r1(filledPx * (1 - sl / 100)) : r1(filledPx * (1 + sl / 100)));
 
+            // Pre-check: if BTC moved past SL during the 1.5s wait, Binance rejects the algoOrder.
+            // Widen SL beyond current mark price so the order is accepted and position stays protected.
+            // Buffer = max(0.5×ATR, 0.1% mark) — larger than before to handle low-ATR / fast-spike combos.
+            try {
+                double markPx = futuresService.getMarkPrice(symbol);
+                if (markPx > 0) {
+                    boolean breached = "SHORT".equals(dir) ? markPx >= slPrice : markPx <= slPrice;
+                    if (breached) {
+                        double atrBuf = sig.atr > 0
+                            ? Math.max(0.5 * sig.atr, r1(markPx * 0.001))
+                            : r1(markPx * 0.002);
+                        double widenedSl = "SHORT".equals(dir) ? r1(markPx + atrBuf) : r1(markPx - atrBuf);
+                        LOG.warnf("[Scalping] Race SL breach — mark=%.1f, SL prévu=%.1f → élargi à %.1f",
+                            markPx, slPrice, widenedSl);
+                        slPrice = widenedSl;
+                    }
+                }
+            } catch (Exception e) {
+                LOG.warnf("[Scalping] Pré-vérif mark price échouée (SL original conservé): %s", e.getMessage());
+            }
+
             // 4. SL — must succeed, otherwise close immediately (trading without SL is unacceptable)
             String slStatus;
             try {
@@ -462,6 +483,24 @@ public class BinanceScalpingTradeService {
                 } catch (Exception e1) {
                     LOG.warnf("[Scalping] SL tentative 1 échouée: %s — retry dans 500ms", e1.getMessage());
                     try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                    // Re-fetch mark price before retry — BTC may have moved further past SL during the 500ms wait.
+                    try {
+                        double retryMark = futuresService.getMarkPrice(symbol);
+                        if (retryMark > 0) {
+                            boolean stillBreached = "SHORT".equals(dir) ? retryMark >= slPrice : retryMark <= slPrice;
+                            if (stillBreached) {
+                                double atrBuf = sig.atr > 0
+                                    ? Math.max(0.5 * sig.atr, r1(retryMark * 0.001))
+                                    : r1(retryMark * 0.002);
+                                double widenedSl = "SHORT".equals(dir) ? r1(retryMark + atrBuf) : r1(retryMark - atrBuf);
+                                LOG.warnf("[Scalping] SL retry re-widen — mark=%.1f → SL %.1f→%.1f",
+                                    retryMark, slPrice, widenedSl);
+                                slPrice = widenedSl;
+                            }
+                        }
+                    } catch (Exception ew) {
+                        LOG.warnf("[Scalping] Re-vérif mark price (retry) échouée: %s", ew.getMessage());
+                    }
                     slResp = futuresService.placeCloseOrder(symbol, closeSide, "STOP_MARKET", slPrice, qtyStr, posSide);
                 }
                 LOG.infof("[Scalping] SL order réponse: %s", slResp);

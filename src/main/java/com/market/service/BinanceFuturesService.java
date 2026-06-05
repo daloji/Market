@@ -358,6 +358,13 @@ public class BinanceFuturesService {
         return getPublic("/fapi/v1/premiumIndex", "symbol=" + symbol);
     }
 
+    public double getMarkPrice(String symbol) throws Exception {
+        String json = getPremiumIndex(symbol);
+        com.fasterxml.jackson.databind.JsonNode n =
+            new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+        return n.path("markPrice").asDouble(0);
+    }
+
     // ── HTTP helpers ──────────────────────────────────────────────────────────
 
     private String post(String path, String body) throws Exception {

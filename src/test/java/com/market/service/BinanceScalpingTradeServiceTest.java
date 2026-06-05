@@ -91,6 +91,9 @@ class BinanceScalpingTradeServiceTest {
         // getRecentUserTrades is called by reconcileClosedPosition — return empty to fall back to mark price
         try { when(futuresService.getRecentUserTrades(any(), anyInt())).thenReturn("[]"); }
         catch (Exception ignored) {}
+        // getMarkPrice used for SL race-condition pre-check — default: mark == entry (no breach)
+        try { when(futuresService.getMarkPrice(any())).thenReturn(100_000.0); }
+        catch (Exception ignored) {}
         when(scalpingService.getSignal()).thenReturn(waitSignal());
     }
 
@@ -383,6 +386,25 @@ class BinanceScalpingTradeServiceTest {
 
         assertEquals("error", r.status, "SL failure must return error status (position emergency-closed)");
         verify(futuresService, atLeastOnce()).closeWithMarket(eq("BTCUSDT"), eq("SELL"), any(), isNull());
+    }
+
+    @Test
+    void checkAndTrade_slBreachRace_widenedSlPlacedSuccessfully() throws Exception {
+        svc.enable();
+        // SHORT signal — entry fills at 100000, SL nominal = 100000 * 1.0015 = 100150
+        when(scalpingService.getSignal()).thenReturn(shortSignal(80));
+        // Simulate race: BTC spiked to 101000 during the 1.5s wait after entry fill
+        when(futuresService.getMarkPrice(any())).thenReturn(101_000.0);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("placed", r.status, "Trade should be placed with widened SL, not aborted");
+        // SL order must be placed above the mark price (101000)
+        ArgumentCaptor<Double> slCaptor = ArgumentCaptor.forClass(Double.class);
+        verify(futuresService, times(1))
+            .placeCloseOrder(eq("BTCUSDT"), eq("BUY"), eq("STOP_MARKET"), slCaptor.capture(), any(), any());
+        assertTrue(slCaptor.getValue() > 101_000.0,
+            "SL widened past mark price expected, got: " + slCaptor.getValue());
     }
 
     // ── Hedge mode: positionSide forwarded correctly ──────────────────────────
@@ -962,6 +984,132 @@ class BinanceScalpingTradeServiceTest {
         assertEquals("TP", r.message,
             "Exit at 73461 (near TP 73460.7, below midpoint 73474.3) must be classified as TP");
         assertTrue(r.pnl > 0, "TP exit on SHORT must be positive P&L");
+    }
+
+    // ── SL FAIL fix: retry with re-widened SL using fresh mark price ──────────
+
+    /**
+     * Core fix: first SL attempt fails (Binance -4120 — mark already past SL).
+     * Before the retry, mark price is re-fetched (BTC kept rising) and SL is
+     * widened again. Second attempt succeeds → trade placed instead of SL_FAILED.
+     */
+    @Test
+    void slFail_attempt1Rejected_retryRewidensWithFreshMark_tradeSucceeds() throws Exception {
+        svc.enable();
+        ScalpingSignal sig = shortSignal(80);
+        sig.atr = 100.0; // nominal SL = 100000 + 0.8×100 = 100080
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        // Pre-check: mark at 100300 (past SL 100080) → widened.
+        // Retry re-check: mark moved further to 100600.
+        when(futuresService.getMarkPrice(any()))
+            .thenReturn(100_300.0)
+            .thenReturn(100_600.0);
+
+        // First STOP_MARKET call throws; second (after re-widen) succeeds.
+        when(futuresService.placeCloseOrder(any(), any(), eq("STOP_MARKET"), anyDouble(), any(), any()))
+            .thenThrow(new RuntimeException("Binance Futures 400: -4120 algo error"))
+            .thenReturn("{\"algoId\":1234}");
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("placed", r.status, "Retry re-widen must save the trade instead of SL_FAILED");
+
+        ArgumentCaptor<Double> slCaptor = ArgumentCaptor.forClass(Double.class);
+        verify(futuresService, times(2))
+            .placeCloseOrder(any(), any(), eq("STOP_MARKET"), slCaptor.capture(), any(), any());
+        double retrySl = slCaptor.getAllValues().get(1);
+        assertTrue(retrySl > 100_600.0,
+            "Retry SL must be widened past second mark price (100600), got: " + retrySl);
+        assertNotNull(getField(realBean(), "activeDir"), "Position must be active after successful retry");
+    }
+
+    /**
+     * Both SL attempts fail (connectivity loss): emergency market close fires.
+     * No TP orders placed, no orphaned internal state.
+     */
+    @Test
+    void slFail_bothAttemptsFail_emergencyCloseNoTpOrders_noOrphanedState() throws Exception {
+        svc.enable();
+        ScalpingSignal sig = shortSignal(80);
+        sig.atr = 100.0;
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        when(futuresService.placeCloseOrder(any(), any(), eq("STOP_MARKET"), anyDouble(), any(), any()))
+            .thenThrow(new RuntimeException("Binance Futures 400: -4120 algo error"));
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("error", r.status, "Double SL failure must return error");
+        assertTrue(r.message.contains("SL"), "Error message must mention SL");
+        // Emergency market close triggered
+        verify(futuresService, atLeastOnce())
+            .closeWithMarket(eq("BTCUSDT"), eq("BUY"), any(), isNull());
+        // TP orders must NOT be placed on an emergency-closed position
+        verify(futuresService, never())
+            .placeCloseOrder(any(), any(), eq("TAKE_PROFIT_MARKET"), anyDouble(), any(), any());
+        // Internal state must not be orphaned (activeDir never set on this path)
+        assertNull(getField(realBean(), "activeDir"), "No orphaned active state after emergency close");
+    }
+
+    /**
+     * Low ATR produces a small buffer (0.5×50 = 25); the fix falls back to 0.1% of
+     * mark price (≈100) when it is larger. This keeps the widened SL far enough above
+     * the mark that Binance accepts it even during fast moves.
+     */
+    @Test
+    void slFail_lowAtr_bufferUsesPercentageFallback_slMeaningfullyAboveMark() throws Exception {
+        svc.enable();
+        ScalpingSignal sig = shortSignal(80);
+        sig.atr = 50.0; // 0.5×50 = 25 < 0.1%×100100 = 100.1 → percentage wins
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        // Mark slightly past the tight SL (100000 + 0.8×50 = 100040)
+        when(futuresService.getMarkPrice(any())).thenReturn(100_100.0);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("placed", r.status);
+        ArgumentCaptor<Double> slCaptor = ArgumentCaptor.forClass(Double.class);
+        verify(futuresService, times(1))
+            .placeCloseOrder(any(), any(), eq("STOP_MARKET"), slCaptor.capture(), any(), any());
+        double sl = slCaptor.getValue();
+        // Old 0.3×ATR = 15 → 100115. New max(25, 100.1) → ~100200. Must be above 100150.
+        assertTrue(sl > 100_100.0 + 50,
+            "Low-ATR buffer must use %-of-mark fallback (expected >100150), got: " + sl);
+    }
+
+    /**
+     * Reproduces the real 04/06/2026 09:18 SL FAIL: SHORT at $63228 with a $66 SL gap,
+     * BTC shot up $306 to $63534 before the order was submitted.
+     * With the wider buffer fix, the trade is placed with widened SL above $63534
+     * instead of falling through to the emergency close path.
+     */
+    @Test
+    void slFail_realScenario_04jun0918_btcShot300_widenedSlSavesTheTrade() throws Exception {
+        svc.enable();
+        ScalpingSignal sig = new ScalpingSignal();
+        sig.direction    = "SHORT";
+        sig.confidence   = 100;
+        sig.currentPrice = 63_228.2;
+        sig.atr          = 83.0; // SL = 63228.2 + 0.8×83 = 63294.6 (matches real trade)
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        when(futuresService.placeMarketOrder(any(), any(), any(), any()))
+            .thenReturn("{\"avgPrice\":\"63228.2\",\"executedQty\":\"0.003\"}");
+        // BTC at 63534 during fill wait: $240 past SL, $306 above entry
+        when(futuresService.getMarkPrice(any())).thenReturn(63_534.4);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("placed", r.status,
+            "Wider buffer must place trade instead of SL_FAILED (pre-fix behavior)");
+        ArgumentCaptor<Double> slCaptor = ArgumentCaptor.forClass(Double.class);
+        verify(futuresService, times(1))
+            .placeCloseOrder(eq("BTCUSDT"), eq("BUY"), eq("STOP_MARKET"), slCaptor.capture(), any(), any());
+        assertTrue(slCaptor.getValue() > 63_534.4,
+            "Widened SL must clear mark price 63534.4, got: " + slCaptor.getValue());
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────
