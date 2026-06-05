@@ -6,6 +6,7 @@ import com.market.service.BinanceScalpingTradeService;
 import com.market.service.FundamentalAnalysisService;
 import com.market.service.RecommendationService;
 import com.market.service.StockDataService;
+import com.market.service.TelegramAlertService;
 import com.market.service.TradeService;
 import io.quarkus.scheduler.Scheduled;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -13,18 +14,20 @@ import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
 import java.util.List;
+import java.util.Map;
 
 @ApplicationScoped
 public class MarketScheduler {
 
     private static final Logger LOG = Logger.getLogger(MarketScheduler.class);
 
-    @Inject StockDataService stockDataService;
-    @Inject RecommendationService recommendationService;
-    @Inject TradeService tradeService;
-    @Inject FundamentalAnalysisService fundamentalAnalysisService;
-    @Inject BinanceAutoTradeService    autoTradeService;
-    @Inject BinanceScalpingTradeService scalpingService;
+    @Inject StockDataService             stockDataService;
+    @Inject RecommendationService        recommendationService;
+    @Inject TradeService                 tradeService;
+    @Inject FundamentalAnalysisService   fundamentalAnalysisService;
+    @Inject BinanceAutoTradeService      autoTradeService;
+    @Inject BinanceScalpingTradeService  scalpingService;
+    @Inject TelegramAlertService         telegramService;
 
     /**
      * Refreshes quotes and regenerates recommendations for all active stocks.
@@ -87,6 +90,91 @@ public class MarketScheduler {
         } else {
             LOG.debugf("[Scalping] ⏭ Skipped: %s", result.message);
         }
+    }
+
+    /**
+     * Polls Telegram every 5 s for incoming commands from the authorized chat.
+     * Supported commands: /start /stop /status /bilan /help
+     */
+    @Scheduled(every = "5s", identity = "telegram-commands")
+    public void processTelegramCommands() {
+        if (!telegramService.isEnabled()) return;
+        List<String> messages = telegramService.pollCommands();
+        for (String raw : messages) {
+            // Strip optional @BotName suffix (Telegram adds it in groups)
+            String cmd = raw.contains("@") ? raw.substring(0, raw.indexOf('@')) : raw;
+            cmd = cmd.toLowerCase().trim();
+            LOG.infof("[Telegram] Commande reçue: %s", cmd);
+            switch (cmd) {
+                case "/stop"   -> {
+                    scalpingService.disable();
+                    telegramService.sendMessage("🛑 *Scalping arrêté*\nAuto-trading désactivé.");
+                }
+                case "/start"  -> {
+                    scalpingService.enable();
+                    telegramService.sendMessage("✅ *Scalping démarré*\nAuto-trading activé.");
+                }
+                case "/status", "/s" -> telegramService.sendMessage(buildStatusMessage());
+                case "/bilan"        -> scalpingService.sendTradeSummary();
+                case "/help"         -> telegramService.sendMessage(
+                    "📋 *Commandes disponibles :*\n" +
+                    "/start — Activer le scalping\n" +
+                    "/stop — Arrêter le scalping\n" +
+                    "/status — État actuel + wallet\n" +
+                    "/bilan — Résumé des trades\n" +
+                    "/help — Cette aide");
+                default -> {
+                    if (cmd.startsWith("/")) {
+                        telegramService.sendMessage(
+                            "❓ Commande inconnue : `" + cmd + "`\nTape /help pour la liste.");
+                    }
+                }
+            }
+        }
+    }
+
+    private String buildStatusMessage() {
+        Map<String, Object> s = scalpingService.statusMap();
+        boolean enabled   = Boolean.TRUE.equals(s.get("enabled"));
+        String  activeDir = (String) s.get("activeDir");
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(enabled ? "✅ *Scalping actif*\n" : "🛑 *Scalping arrêté*\n");
+
+        if (activeDir != null) {
+            String emoji = "LONG".equals(activeDir) ? "🟢" : "🔴";
+            double entry = num(s.get("activeEntry"));
+            double tp1   = num(s.get("activeTp1"));
+            double tp2   = num(s.get("activeTp2"));
+            double sl    = num(s.get("activeSl"));
+            Object conf  = s.get("activeConf");
+            sb.append(String.format(java.util.Locale.US,
+                "%s Position %s — entrée $%,.1f | conf %s%%\n" +
+                "TP1 : $%,.1f · TP2 : $%,.1f · SL : $%,.1f\n",
+                emoji, activeDir, entry, conf != null ? conf : "?", tp1, tp2, sl));
+        } else {
+            sb.append("Aucune position ouverte\n");
+        }
+
+        Object cooldown = s.get("cooldownRemaining");
+        if (cooldown instanceof Number n && n.longValue() > 0) {
+            sb.append(String.format("⏱ Cooldown : %d min restantes\n", n.longValue() / 60 + 1));
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<String, Double> wallet = (Map<String, Double>) s.get("wallet");
+        if (wallet != null) {
+            double avail = wallet.getOrDefault("availableBalance", 0.0);
+            double total = wallet.getOrDefault("walletBalance", 0.0);
+            sb.append(String.format(java.util.Locale.US,
+                "💰 Wallet : $%.2f dispo / $%.2f total", avail, total));
+        }
+
+        return sb.toString();
+    }
+
+    private double num(Object o) {
+        return o instanceof Number n ? n.doubleValue() : 0.0;
     }
 
     /**

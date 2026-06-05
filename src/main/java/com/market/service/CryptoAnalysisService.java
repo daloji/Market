@@ -59,7 +59,6 @@ public class CryptoAnalysisService {
         }
         BitcoinSignal signal = compute();
         if (signal.error == null) {
-            telegramAlertService.notifyIfNeeded(signal);
             cached   = signal;
             cachedAt = now;
         } else if (cached != null) {

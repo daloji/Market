@@ -58,6 +58,9 @@ public class TelegramAlertService {
     private String lastAlertedDirection = "WAIT";
     private long   lastAlertAt          = 0;
 
+    /** Offset for getUpdates — tracks the last processed update_id to avoid duplicates. */
+    private volatile long lastUpdateId = -1;
+
     /**
      * Called after every fresh signal computation.
      * Sends an alert only when conviction + direction transition + cooldown conditions pass.
@@ -141,18 +144,71 @@ public class TelegramAlertService {
     }
 
     /**
-     * Sends a scalping trade open notification (compact format for 1m trades).
+     * Sends a scalping trade open notification (1m trades).
+     * tp2=0 means single-TP mode (position too small to split).
      */
-    public void sendScalpingAlert(String dir, double price, double tp, double sl, int conf) {
+    public void sendScalpingAlert(String dir, double price, double tp1, double tp2, double sl,
+                                  int conf, int leverage, double amount) {
         if (!isEnabled()) return;
         String emoji = "LONG".equals(dir) ? "⚡🟢 SCALP LONG" : "⚡🔴 SCALP SHORT";
+        String tp2Text = tp2 > 0
+            ? String.format(java.util.Locale.US, " · TP2 : $%,.1f", tp2)
+            : "";
         String text = String.format(java.util.Locale.US,
             "%s *BTC/USDT [1m]*\n" +
-            "Entrée : $%,.2f | Conf : %d%%\n" +
-            "TP : $%,.2f · SL : $%,.2f",
-            emoji, price, conf, tp, sl
+            "Entrée : $%,.2f | Conf : %d%% | x%d — $%.0f\n" +
+            "TP1 : $%,.1f%s · SL : $%,.1f",
+            emoji, price, conf, leverage, amount,
+            tp1, tp2Text, sl
         );
         send(text);
+    }
+
+    /** Sends a raw pre-formatted message (e.g. trade summary). */
+    public void sendMessage(String text) {
+        if (!isEnabled()) return;
+        send(text);
+    }
+
+    /**
+     * Polls Telegram for new messages from the authorized chat only.
+     * Returns command texts as-is (trimmed). Caller decides what to do with them.
+     * Updates {@code lastUpdateId} so each message is returned at most once.
+     */
+    public java.util.List<String> pollCommands() {
+        if (!isEnabled()) return java.util.Collections.emptyList();
+        try {
+            String url = API_BASE + botToken.get() + "/getUpdates?offset=" + (lastUpdateId + 1)
+                       + "&timeout=0&limit=20&allowed_updates=%5B%22message%22%5D";
+            HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .GET()
+                .build();
+            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) return java.util.Collections.emptyList();
+
+            com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();
+            com.fasterxml.jackson.databind.JsonNode root = om.readTree(resp.body());
+            if (!root.path("ok").asBoolean()) return java.util.Collections.emptyList();
+
+            java.util.List<String> commands = new java.util.ArrayList<>();
+            for (com.fasterxml.jackson.databind.JsonNode update : root.path("result")) {
+                long updateId = update.path("update_id").asLong();
+                if (updateId > lastUpdateId) lastUpdateId = updateId;
+
+                // Ignore messages from other chats (security filter)
+                String msgChatId = update.path("message").path("chat").path("id").asText("");
+                if (!chatId.get().equals(msgChatId)) continue;
+
+                String text = update.path("message").path("text").asText("").trim();
+                if (!text.isEmpty()) commands.add(text);
+            }
+            return commands;
+        } catch (Exception e) {
+            LOG.debugf("[Telegram] pollCommands error: %s", e.getMessage());
+            return java.util.Collections.emptyList();
+        }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

@@ -90,7 +90,12 @@ class TelegramAlertServiceTest {
     @Test
     void sendScalpingAlert_doesNotThrow() {
         assertDoesNotThrow(() ->
-            service.sendScalpingAlert("SHORT", 95_000.0, 94_700.0, 95_380.0, 68));
+            service.sendScalpingAlert("SHORT", 95_000.0, 94_700.0, 94_400.0, 95_380.0, 68, 10, 50.0));
+    }
+
+    @Test
+    void sendMessage_doesNotThrow() {
+        assertDoesNotThrow(() -> service.sendMessage("📊 *Bilan test*\nWin rate: 60%"));
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────

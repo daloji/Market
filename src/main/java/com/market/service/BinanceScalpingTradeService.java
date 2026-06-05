@@ -536,6 +536,16 @@ public class BinanceScalpingTradeService {
                 errTrade.dbId       = persistTrade(errTrade);
                 tradeHistory.addLast(errTrade);
                 if (tradeHistory.size() > MAX_HISTORY) tradeHistory.pollFirst();
+                // Apply cooldown + loss streak so the bot doesn't immediately retry after SL failure
+                lastTradeAt = Instant.now();
+                consecutiveLosses++;
+                if (consecutiveLosses >= LOSS_STREAK_LIMIT) {
+                    lossStreakCoolUntil = Instant.now().plusMillis(LOSS_STREAK_COOL_MS);
+                    LOG.warnf("[Scalping] ⚠ %d SL_FAILED consécutifs — pause de 30 min", consecutiveLosses);
+                    telegramService.sendCloseAlert(dir,
+                        String.format("SL_FAILED — pause %d SL consécutifs", consecutiveLosses),
+                        emergencyExitPx, errTrade.pnlNet);
+                }
                 coordinator.release(BinanceTradeCoordinator.Owner.SCALPING);
                 return ScalpResult.error("SL non placé — position fermée par sécurité: " + e.getMessage());
             }
@@ -599,7 +609,8 @@ public class BinanceScalpingTradeService {
                 ? String.format("%s @ %.1f | %s | TP1=%.1f TP2=%.1f (Java)", dir, filledPx, slStatus, tp1Price, tp2Price)
                 : String.format("%s @ %.1f | %s | TP=%.1f (single, qty min)", dir, filledPx, slStatus, tp1Price);
             LOG.infof("[Scalping] %s", summary);
-            telegramService.sendScalpingAlert(dir, filledPx, tp1Price, slPrice, sig.confidence);
+            telegramService.sendScalpingAlert(dir, filledPx, tp1Price, canSplit ? tp2Price : 0,
+                slPrice, sig.confidence, lev, amt);
 
             return ScalpResult.placed(dir, sig.confidence, filledPx, tp1Price, slPrice, summary);
 
@@ -744,6 +755,7 @@ public class BinanceScalpingTradeService {
             lossStreakCoolUntil = null;
         }
         clearActive();
+        sendTradeSummary();
         return ScalpResult.closed(reason, actualPrice, pnlNet);
     }
 
@@ -1009,6 +1021,7 @@ public class BinanceScalpingTradeService {
             lossStreakCoolUntil = null;
         }
         clearActive();
+        sendTradeSummary();
         return ScalpResult.closed(reason, price, pnlNet);
     }
 
@@ -1248,6 +1261,47 @@ public class BinanceScalpingTradeService {
         final double avgPrice;
         final double fees;
         FillData(double p, double f) { this.avgPrice = p; this.fees = f; }
+    }
+
+    // ── Trade summary ─────────────────────────────────────────────────────────
+
+    public void sendTradeSummary() {
+        if (!telegramService.isEnabled()) return;
+        java.util.List<ScalpTrade> closed = new java.util.ArrayList<>();
+        for (ScalpTrade t : tradeHistory) {
+            if (!"OPEN".equals(t.status) && t.closedAt != null) closed.add(t);
+        }
+        if (closed.isEmpty()) return;
+
+        long wins     = closed.stream().filter(t -> t.pnlNet > 0).count();
+        long losses   = closed.size() - wins;
+        double total  = closed.stream().mapToDouble(t -> t.pnlNet).sum();
+        double avg    = total / closed.size();
+        double best   = closed.stream().mapToDouble(t -> t.pnlNet).max().orElse(0);
+        double worst  = closed.stream().mapToDouble(t -> t.pnlNet).min().orElse(0);
+        double wr     = wins * 100.0 / closed.size();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format(Locale.US,
+            "📊 *Bilan scalping — %d trades*\n" +
+            "Win rate : %.0f%% | ✅ %d TP | ❌ %d SL\n" +
+            "PnL cumulé : %s$%.2f | Moy : %s$%.2f\n" +
+            "Meilleur : +$%.2f | Pire : $%.2f\n",
+            closed.size(), wr, wins, losses,
+            total >= 0 ? "+" : "", total,
+            avg >= 0 ? "+" : "", avg,
+            best, worst));
+
+        int n = Math.min(5, closed.size());
+        sb.append("\n*5 derniers :*\n");
+        for (int i = closed.size() - n; i < closed.size(); i++) {
+            ScalpTrade t = closed.get(i);
+            String d = "LONG".equals(t.direction) ? "🟢 L" : "🔴 S";
+            String e = t.pnlNet >= 0 ? "✅" : "❌";
+            sb.append(String.format(Locale.US, "%s %s %s$%.2f [%s]\n",
+                d, e, t.pnlNet >= 0 ? "+" : "", t.pnlNet, t.status));
+        }
+        telegramService.sendMessage(sb.toString());
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
