@@ -2337,6 +2337,8 @@ function renderScalpingHistory(trades) {
         <th style="padding:4px 8px;color:var(--red)" data-tooltip="Stop Loss — niveau de clôture perdante\nOrdre algo Binance">SL</th>
         <th style="padding:4px 8px" data-tooltip="Prix effectif de clôture du trade (fill réel Binance)">Sortie</th>
         <th style="padding:4px 8px" data-tooltip="Durée totale du trade (de l'ouverture à la clôture)">Durée</th>
+        <th style="padding:4px 8px" data-tooltip="Mise en USDT placée sur Binance (sans levier)">Mise</th>
+        <th style="padding:4px 8px" data-tooltip="Levier utilisé (ex: 10× = notionnel 10× la mise)">Lev</th>
         <th style="padding:4px 8px" data-tooltip="Résultat final du trade\n🟢 TP = objectif atteint\n🔴 SL = stop touché\n🟡 SL+ = SL après TP1 capturé (gain net)\n⚠ SL FAIL = SL non placé, urgence\n✋ Manuel = clôture manuelle\n⏳ Ouvert = en cours">Statut</th>
         <th style="padding:4px 8px;text-align:right" data-tooltip="P&amp;L net après frais Binance\nGris = ancien trade (frais non trackés)">P&L net</th>
       </tr>
@@ -2384,6 +2386,12 @@ function renderScalpingHistory(trades) {
                 : isTp    ? 'background:rgba(46,160,67,0.04)'
                 :            '';
     const badge = STATUS_BADGE[statusKey] || `<span>${t.status}</span>`;
+    const miseFmt = t.amountUsdt > 0
+      ? `${t.amountUsdt.toFixed(0)} $`
+      : '<span style="color:var(--muted)">—</span>';
+    const levFmt = t.leverage > 0
+      ? `<span style="color:var(--muted)">${t.leverage}×</span>`
+      : '<span style="color:var(--muted)">—</span>';
     html += `<tr style="border-bottom:1px solid var(--border);${rowBg}">
       <td style="padding:5px 8px;color:var(--muted)">${dateFmt}</td>
       <td style="padding:5px 8px;font-weight:700;color:${dirColor}">${t.direction === 'LONG' ? '▲ LONG' : '▼ SHORT'}</td>
@@ -2393,6 +2401,8 @@ function renderScalpingHistory(trades) {
       <td style="padding:5px 8px;color:var(--red)">${t.slPrice ? '$' + t.slPrice.toFixed(1) : '—'}</td>
       <td style="padding:5px 8px">${exitFmt}</td>
       <td style="padding:5px 8px;color:var(--muted)">${dur}</td>
+      <td style="padding:5px 8px">${miseFmt}</td>
+      <td style="padding:5px 8px">${levFmt}</td>
       <td style="padding:5px 8px">${badge}</td>
       <td style="padding:5px 8px;text-align:right">${pnlFmt}</td>
     </tr>`;

@@ -1112,6 +1112,158 @@ class BinanceScalpingTradeServiceTest {
             "Widened SL must clear mark price 63534.4, got: " + slCaptor.getValue());
     }
 
+    // ── closePartial: SL fired before Java TP1 detection ─────────────────────
+
+    /**
+     * Bug fix: SL fires on Binance before the Java 1-minute cycle detects TP1.
+     * fetchFillsAfter(closeMs) returns null (SL fills are before closeMs).
+     * The wider search from activeOpenedAt finds the SL fill (below entry).
+     * Expected: whole position closed as SL with actual negative PnL — NOT a fake TP1 profit.
+     */
+    @Test
+    void closePartial_slFiredBeforeJavaTp1Detection_closesFullPositionAsSLLoss() throws Exception {
+        svc.enable();
+        BinanceScalpingTradeService real = realBean();
+
+        Instant openedAt = Instant.now().minusSeconds(120);
+        setField(real, "activeDir",        "LONG");
+        setField(real, "activeEntryPrice", 100_000.0);
+        setField(real, "activeTp1Price",   100_300.0);
+        setField(real, "activeTp2Price",   100_600.0);
+        setField(real, "activeSlPrice",     99_850.0);
+        setField(real, "activeQty",            0.004);
+        setField(real, "activeQty40",          0.002);
+        setField(real, "activeTp1Hit",         false);
+        setField(real, "activeTp1Pnl",         0.0);
+        setField(real, "activeFees",            0.0);
+        setField(real, "activeOpenedAt",   openedAt);
+        setField(real, "activeTp1CloseMs", 0L);
+
+        // SL fill happened 60s ago (between openedAt and the upcoming closeMs)
+        long slFillTime = Instant.now().minusSeconds(60).toEpochMilli();
+        String slFillJson = String.format(
+            "[{\"side\":\"SELL\",\"price\":\"99800\",\"qty\":\"0.004\",\"time\":\"%d\",\"commission\":\"0.04\"}]",
+            slFillTime);
+
+        // Binance still shows position open (race: SL just fired but positionRisk lags)
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.004\"}]");
+        // closeWithMarket: -2022 — position already fully closed by SL
+        when(futuresService.closeWithMarket(any(), any(), any(), any()))
+            .thenThrow(new RuntimeException("Binance error: -2022 ReduceOnly Order is rejected"));
+        // getRecentUserTrades always returns the SL fill; time filter in Java decides if included
+        when(futuresService.getRecentUserTrades(any(), anyInt())).thenReturn(slFillJson);
+
+        // Signal shows price at TP1 (triggering Java TP1 detection)
+        ScalpingSignal sig = new ScalpingSignal();
+        sig.currentPrice = 100_300.0;
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("closed", r.status,
+            "Position should be fully closed, not partial TP1");
+        assertEquals("SL", r.message,
+            "Fill below entry must be classified as SL, not TP1");
+        assertTrue(r.pnl < 0,
+            "Trade with fill below entry must show a loss, got: " + r.pnl);
+    }
+
+    /**
+     * Variant: fetchFillsAfter returns a fill immediately but it is below entry (SL fill
+     * arrived within the narrow window). wrongDirection check must catch this and close
+     * the full position as SL — not record a fake TP1 profit.
+     */
+    @Test
+    void closePartial_fillBelowEntryInNarrowWindow_closesFullPositionAsSLLoss() throws Exception {
+        svc.enable();
+        BinanceScalpingTradeService real = realBean();
+
+        Instant openedAt = Instant.now().minusSeconds(120);
+        setField(real, "activeDir",        "LONG");
+        setField(real, "activeEntryPrice", 100_000.0);
+        setField(real, "activeTp1Price",   100_300.0);
+        setField(real, "activeTp2Price",   100_600.0);
+        setField(real, "activeSlPrice",     99_850.0);
+        setField(real, "activeQty",            0.004);
+        setField(real, "activeQty40",          0.002);
+        setField(real, "activeTp1Hit",         false);
+        setField(real, "activeTp1Pnl",         0.0);
+        setField(real, "activeFees",            0.0);
+        setField(real, "activeOpenedAt",   openedAt);
+        setField(real, "activeTp1CloseMs", 0L);
+
+        // SL fill in the future (guaranteed to pass the narrow time filter)
+        String slFillJson =
+            "[{\"side\":\"SELL\",\"price\":\"99800\",\"qty\":\"0.004\",\"time\":\"9999999999999\",\"commission\":\"0.04\"}]";
+
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.004\"}]");
+        when(futuresService.closeWithMarket(any(), any(), any(), any())).thenReturn("{}");
+        when(futuresService.getRecentUserTrades(any(), anyInt())).thenReturn(slFillJson);
+
+        ScalpingSignal sig = new ScalpingSignal();
+        sig.currentPrice = 100_300.0;
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("closed", r.status);
+        assertEquals("SL", r.message,
+            "Fill at 99800 is below entry 100000 — must be classified as SL, not fake TP1");
+        assertTrue(r.pnl < 0,
+            "Fill below entry must produce a loss, got: " + r.pnl);
+    }
+
+    /**
+     * closePosition with null fill in narrow window: broader search finds actual fill
+     * and uses it instead of the trigger price.
+     * Scenario: TP2 triggered in Java, closeWithMarket returns -4003, fill happened
+     * before closeMs (SL close), broader search from activeTp1CloseMs finds it.
+     */
+    @Test
+    void closePosition_nullFillInNarrowWindow_broadensSearchAndUsesActualFill() throws Exception {
+        svc.enable();
+        BinanceScalpingTradeService real = realBean();
+
+        Instant openedAt = Instant.now().minusSeconds(180);
+        long tp1CloseMs  = Instant.now().minusSeconds(60).toEpochMilli();
+        setField(real, "activeDir",        "LONG");
+        setField(real, "activeEntryPrice", 100_000.0);
+        setField(real, "activeTp1Price",   100_300.0);
+        setField(real, "activeTp2Price",   100_600.0);
+        setField(real, "activeSlPrice",     99_850.0);
+        setField(real, "activeQty",            0.002);   // 40% remaining after TP1
+        setField(real, "activeQty40",          0.002);
+        setField(real, "activeTp1Hit",         true);
+        setField(real, "activeTp1Pnl",         0.06);    // +$0.06 locked at TP1
+        setField(real, "activeFees",            0.05);   // entry + TP1 fees
+        setField(real, "activeOpenedAt",   openedAt);
+        setField(real, "activeTp1CloseMs", tp1CloseMs);
+
+        // Actual fill (SL) happened 30s ago — after tp1CloseMs, before upcoming closeMs
+        long fillTime = Instant.now().minusSeconds(30).toEpochMilli();
+        String fillJson = String.format(
+            "[{\"side\":\"SELL\",\"price\":\"99800\",\"qty\":\"0.002\",\"time\":\"%d\",\"commission\":\"0.02\"}]",
+            fillTime);
+
+        when(futuresService.getPositionRisk(any())).thenReturn("[{\"positionAmt\":\"0.002\"}]");
+        when(futuresService.closeWithMarket(any(), any(), any(), any()))
+            .thenThrow(new RuntimeException("Binance error: -4003 quantity is invalid"));
+        when(futuresService.getRecentUserTrades(any(), anyInt())).thenReturn(fillJson);
+
+        // Signal price at TP2 triggers Java closePosition("TP2")
+        ScalpingSignal sig = new ScalpingSignal();
+        sig.currentPrice = 100_600.0;
+        when(scalpingService.getSignal()).thenReturn(sig);
+
+        BinanceScalpingTradeService.ScalpResult r = svc.checkAndTrade();
+
+        assertEquals("closed", r.status);
+        // Fill at 99800 (actual price from broader search) used instead of trigger price 100600
+        // pnl = (99800 - 100000) * 0.002 + 0.06 = -0.40 + 0.06 = -0.34 → negative
+        assertTrue(r.pnl < 0,
+            "Actual SL fill (99800) must be used, not trigger price (100600). PnL got: " + r.pnl);
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────────
 
     private Object getField(Object target, String name) throws Exception {

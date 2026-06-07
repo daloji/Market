@@ -42,7 +42,7 @@ import java.util.stream.Collectors;
  * Hard gates:
  *   - TTM Squeeze (BB inside KC) → WAIT
  *   - ATR(14) < max(0.08%, medianTR50×50%) → WAIT (insufficient volatility)
- *   - ADX(14) < 22               → WAIT (range market, no trend)
+ *   - ADX(14) < 28               → WAIT (range market, no trend)
  *   - volumeRatio < 1.0           → WAIT (volume sous la moyenne, pas de carburant)
  *   - marketStructure1m contredit la direction → WAIT (structure 1m opposée)
  *
@@ -265,10 +265,10 @@ public class ScalpingAnalysisService {
             s.minusDI  = r2(adxRes[2]);
             s.marketRegime = s.adx > 25 ? "TREND" : s.adx < 20 ? "RANGE" : "NEUTRAL";
 
-            if (s.adx < 22) {
+            if (s.adx < 28) {
                 s.direction  = "WAIT";
                 s.confidence = 0;
-                s.reasoning  = String.format("ADX=%.1f — marché en RANGE (seuil 22), scalping suspendu.", s.adx);
+                s.reasoning  = String.format("ADX=%.1f — marché en RANGE (seuil 28), scalping suspendu.", s.adx);
                 populateTargets(s, price, s.atr);
                 s.candles = candles.subList(Math.max(0, n - 100), n);
                 return s;
