@@ -2,6 +2,9 @@ package com.market.resource;
 
 import com.market.service.BinanceFuturesService;
 import com.market.service.BinanceScalpingTradeService;
+import com.market.service.BinanceScalpingTradeService.AnalyticsReport;
+import com.market.service.BinanceScalpingTradeService.AnalyticsBucket;
+import com.market.service.BinanceScalpingTradeService.WaitBreakdown;
 import com.market.service.BinanceScalpingTradeService.ScalpResult;
 import com.market.service.BinanceScalpingTradeService.ScalpDiag;
 import com.market.service.BinanceScalpingTradeService.ScalpTrade;
@@ -366,7 +369,102 @@ class ScalpingResourceTest {
             .statusCode(200);
     }
 
+    // ── GET /api/scalping/analytics ──────────────────────────────────────────
+
+    @Test
+    void analytics_days0_returns400() {
+        given()
+            .queryParam("days", 0)
+            .when().get("/api/scalping/analytics")
+            .then()
+            .statusCode(400)
+            .body("error", notNullValue());
+    }
+
+    @Test
+    void analytics_days366_returns400() {
+        given()
+            .queryParam("days", 366)
+            .when().get("/api/scalping/analytics")
+            .then()
+            .statusCode(400)
+            .body("error", notNullValue());
+    }
+
+    @Test
+    void analytics_defaultDays_callsServiceWith30() {
+        when(scalping.analyzeHistory(30)).thenReturn(emptyReport("30 jour(s)"));
+
+        given()
+            .when().get("/api/scalping/analytics")
+            .then()
+            .statusCode(200);
+
+        verify(scalping).analyzeHistory(30);
+    }
+
+    @Test
+    void analytics_returnsAllReportFields() {
+        AnalyticsReport report = new AnalyticsReport();
+        report.period       = "7 jour(s)";
+        report.status       = "OK";
+        report.totalTrades  = 8;
+        report.winCount     = 5;
+        report.lossCount    = 3;
+        report.winRate      = 62.5;
+        report.avgPnlNet    = 1.80;
+        report.totalPnlNet  = 14.40;
+        report.topInsight   = "Meilleure heure: 12-16h";
+        report.byAdx         = List.of();
+        report.byHour        = List.of();
+        report.byConfidence  = List.of();
+        report.byTfAlignment = List.of();
+        report.byRsiZone     = List.of();
+        report.byCvd         = List.of();
+        report.byVolumeRatio = List.of();
+        report.byOutcomeType = List.of();
+        report.byPillar1     = List.of();
+        report.byPillar2     = List.of();
+        report.byPillar3     = List.of();
+        report.waitBreakdown = new WaitBreakdown();
+        when(scalping.analyzeHistory(7)).thenReturn(report);
+
+        given()
+            .queryParam("days", 7)
+            .when().get("/api/scalping/analytics")
+            .then()
+            .statusCode(200)
+            .body("status",        equalTo("OK"))
+            .body("totalTrades",   equalTo(8))
+            .body("winCount",      equalTo(5))
+            .body("lossCount",     equalTo(3))
+            .body("winRate",       equalTo(62.5f))
+            .body("topInsight",    containsString("12-16h"))
+            .body("byAdx",         notNullValue())
+            .body("waitBreakdown", notNullValue());
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static AnalyticsReport emptyReport(String period) {
+        AnalyticsReport r = new AnalyticsReport();
+        r.period       = period;
+        r.status       = "PAS_DE_DONNÉES";
+        r.topInsight   = "Aucun trade";
+        r.byAdx        = List.of();
+        r.byHour       = List.of();
+        r.byConfidence = List.of();
+        r.byTfAlignment= List.of();
+        r.byRsiZone    = List.of();
+        r.byCvd        = List.of();
+        r.byVolumeRatio= List.of();
+        r.byOutcomeType= List.of();
+        r.byPillar1    = List.of();
+        r.byPillar2    = List.of();
+        r.byPillar3    = List.of();
+        r.waitBreakdown= new WaitBreakdown();
+        return r;
+    }
 
     private static ScalpResult skipped(String msg) {
         ScalpResult r = new ScalpResult();

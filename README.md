@@ -462,7 +462,7 @@ market.binance.futures.auto-trade.daily-loss-limit=100
 
 | Classe | Tests |
 |--------|-------|
-| `BinanceScalpingTradeServiceTest` | 28 — gates, SL/TP monitor, -4003/-2022, PnL, statusMap |
+| `BinanceScalpingTradeServiceTest` | 53 — gates, SL/TP monitor, -4003/-2022, PnL, statusMap, reconcileHistory |
 | `BinanceAutoTradeServiceTest` | 47 — cooldown, daily limit, kill switch, anti-empilement, filtres |
 | `TechnicalAnalysisServiceTest` | 41 — RSI, MACD, EMA, ATR, ADX, Bollinger, structure |
 | `TradeServiceTest` | 29 — CRUD trades, P&L |
@@ -521,22 +521,24 @@ ScalpingTradeLog (scalping_signal_log)  — snapshot complet signal + outcome, t
 
 ---
 
-### 📊 Indicateurs v4 (bougies 1 minute + 5m + 15m)
+### 📊 Indicateurs v5 (bougies 1 minute + 5m + 15m)
 
 | Indicateur | TF | Rôle |
 |------------|-----|------|
 | EMA(20) vs EMA(50) | 15m | Tendance macro (+15 pts pilier 1) |
 | EMA(9) vs EMA(21) | 5m | Tendance meso (+15 pts pilier 1) |
 | SMA(50) + Supertrend(10,3) | 1m | Tendance micro (+10 pts pilier 1) |
-| RSI(14) — zones 50–70 / 28–48 | 1m | Momentum quality (pilier 2) |
-| MACD(12,26,9) histogramme | 1m | Momentum quality (pilier 2) |
-| Stoch(14,3) | 1m | Momentum quality (pilier 2) |
-| ATR = max(ATR7, ATR14) | 1m | Gate volatilité + calcul TP/SL |
+| RSI(14) — zones 52–72 / 28–48 | 1m | Momentum quality (pilier 2) |
+| MACD(12,26,9) histogramme + accélération | 1m | Momentum quality (pilier 2) |
+| Stoch(14,3) — crossover | 1m | Momentum quality (pilier 2) |
+| Divergence RSI | 1m | Momentum quality (+8 pts) |
+| ATR = max(ATR7, ATR14) | 1m | Gate adaptatif + calcul TP/SL |
+| ADX(14) | 1m | Gate marché range (< 28 → WAIT) |
 | Taker buy delta (20 bars) | 1m | Order flow (pilier 3) |
 | CVD slope (20 bars) | 1m | Order flow (pilier 3) |
-| Volume ratio vs avg | 1m | Order flow (pilier 3) |
-| VWAP + bandes σ | 1m | Bonus +5 pts (bounce momentum) |
-| Market Structure (pivots) | 1m | Bonus +5–8 pts |
+| Volume ratio vs avg | 1m | Order flow (pilier 3) + gate (< 1.0 → WAIT) |
+| VWAP + bandes σ | 1m | Bonus +5 pts (bounce + RSI slope) |
+| Market Structure (pivots) | 1m | Bonus +5–8 pts + gate contredit |
 | TTM Squeeze (BB dans KC) | 1m | Gate 1 — bloque si vrai |
 
 ---
@@ -559,10 +561,10 @@ Sinon → WAIT
 
 ```
 TP/SL entièrement ATR-based (recalculés sur le filledPrice réel) :
-  SL  = filledPrice ∓ 0.6 × ATR    (STOP_MARKET Binance, qty totale)
-  TP1 = filledPrice ± 1.0 × ATR    (TAKE_PROFIT_MARKET Binance, 60% qty)
-  TP2 = filledPrice ± 2.0 × ATR    (closeWithMarket Java, 40% qty restante)
-  R:R = 1.67 (TP1) · 3.33 (TP2)
+  SL  = filledPrice ∓ 0.8 × ATR    (STOP_MARKET Binance, qty totale)
+  TP1 = filledPrice ± 1.3 × ATR    (TAKE_PROFIT_MARKET Binance, 60% qty)
+  TP2 = filledPrice ± 2.6 × ATR    (closeWithMarket Java, 40% qty restante)
+  R:R ≈ 1.625 (TP1) · 3.25 (TP2)
 
 Quantité : floor((amountUsdt × leverage / filledPrice) × 1000) / 1000, min 0.001 BTC
 canSplit  : qty >= 0.002 → double TP · sinon single-TP automatique
@@ -639,9 +641,11 @@ loss-streak   = pause 30 min après 2 SL consécutifs
 | GET | `/api/scalping/algo-orders` | Ordres algo SL/TP ouverts sur Binance |
 | GET | `/api/scalping/logs` | Logs de toutes les analyses (WAIT + skipped + placed) |
 | GET | `/api/scalping/logs?outcome=wait` | Filtrer par outcome (wait/placed/cooldown/low_conf…) |
-| GET | `/api/scalping/logs?limit=200` | Augmenter la limite (max 500) |
+| GET | `/api/scalping/logs?limit=200` | Augmenter la limite |
 | GET | `/api/scalping/logs/{id}` | Log précis par son id |
 | GET | `/api/scalping/logs/trade/{tid}` | Log lié à un tradeId |
+| GET | `/api/scalping/analytics?days=30` | Win rate empirique par indicateur, heure, pilier, ADX… |
+| GET | `/api/scalping/reconcile-history?days=7` | Comparaison trades locaux vs fills réels Binance |
 
 ---
 

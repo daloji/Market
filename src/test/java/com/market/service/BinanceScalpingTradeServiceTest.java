@@ -1,7 +1,10 @@
 package com.market.service;
 
 import com.market.model.ScalpingSignal;
+import com.market.model.ScalpingTrade;
+import com.market.model.ScalpingTradeLog;
 import io.quarkus.arc.ClientProxy;
+import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import io.quarkus.test.junit.mockito.InjectMock;
 import jakarta.inject.Inject;
@@ -11,6 +14,8 @@ import org.mockito.ArgumentCaptor;
 
 import java.lang.reflect.Field;
 import java.time.Instant;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -90,6 +95,9 @@ class BinanceScalpingTradeServiceTest {
                 .thenReturn("{\"algoId\":1234}");
         // getRecentUserTrades is called by reconcileClosedPosition — return empty to fall back to mark price
         try { when(futuresService.getRecentUserTrades(any(), anyInt())).thenReturn("[]"); }
+        catch (Exception ignored) {}
+        // getUserTradesFrom is called by reconcileTradeHistory — return empty by default
+        try { when(futuresService.getUserTradesFrom(any(), anyLong(), anyInt())).thenReturn("[]"); }
         catch (Exception ignored) {}
         // getMarkPrice used for SL race-condition pre-check — default: mark == entry (no breach)
         try { when(futuresService.getMarkPrice(any())).thenReturn(100_000.0); }
@@ -1262,6 +1270,399 @@ class BinanceScalpingTradeServiceTest {
         // pnl = (99800 - 100000) * 0.002 + 0.06 = -0.40 + 0.06 = -0.34 → negative
         assertTrue(r.pnl < 0,
             "Actual SL fill (99800) must be used, not trigger price (100600). PnL got: " + r.pnl);
+    }
+
+    // ── analyzeHistory ────────────────────────────────────────────────────────
+
+    @Test
+    void analyzeHistory_noRecentLogs_returnsPasDeDonn​ees() {
+        // days=0 → sinceMs = now → aucun log avec loggedAt >= now
+        BinanceScalpingTradeService.AnalyticsReport r = svc.analyzeHistory(0);
+        assertEquals("PAS_DE_DONNÉES", r.status);
+        assertEquals(0, r.totalTrades);
+        assertNotNull(r.topInsight);
+        assertNotNull(r.byAdx);
+    }
+
+    @Test
+    @TestTransaction
+    void analyzeHistory_onePlacedTrade_appearsInReport() {
+        ScalpingTrade trade = newClosedTrade("LONG", 95000, 95300, 12.0, 0.114);
+        trade.persist();
+        ScalpingTradeLog log = newPlacedLog(trade.id, 30.0, 65.0, 75, 3, 0);
+        log.persist();
+
+        BinanceScalpingTradeService.AnalyticsReport r = svc.analyzeHistory(1);
+
+        assertEquals("OK", r.status);
+        assertTrue(r.totalTrades >= 1, "totalTrades doit inclure le trade inséré");
+        assertTrue(r.winRate >= 0 && r.winRate <= 100);
+        assertNotNull(r.waitBreakdown);
+        assertFalse(r.byAdx.isEmpty());
+        assertFalse(r.byHour.isEmpty());
+        assertFalse(r.byConfidence.isEmpty());
+    }
+
+    @Test
+    @TestTransaction
+    void analyzeHistory_winnerAndLoser_sumIsCorrect() {
+        // Trade gagnant
+        ScalpingTrade win = newClosedTrade("LONG", 95000, 95300, 12.0, 0.114);
+        win.persist();
+        newPlacedLog(win.id, 30.0, 65.0, 75, 3, 0).persist();
+
+        // Trade perdant
+        ScalpingTrade loss = newClosedTrade("SHORT", 95000, 95200, -6.0, 0.114);
+        loss.pnlNet = -6.114;
+        loss.status = "SL";
+        loss.persist();
+        newPlacedLog(loss.id, 32.0, 42.0, 72, 0, 3).persist();
+
+        BinanceScalpingTradeService.AnalyticsReport r = svc.analyzeHistory(1);
+
+        assertTrue(r.winCount + r.lossCount == r.totalTrades);
+        assertEquals(r.winCount + r.lossCount, r.totalTrades);
+        assertTrue(r.totalPnlNet != 0 || r.totalTrades == 0);
+    }
+
+    @Test
+    @TestTransaction
+    void analyzeHistory_adx30_bucketedAs2832() {
+        ScalpingTrade trade = newClosedTrade("LONG", 95000, 95300, 12.0, 0.114);
+        trade.persist();
+        newPlacedLog(trade.id, 30.0, 65.0, 75, 3, 0).persist(); // adx=30 → "28-32"
+
+        BinanceScalpingTradeService.AnalyticsReport r = svc.analyzeHistory(1);
+
+        assertTrue(
+            r.byAdx.stream().anyMatch(b -> "28-32".equals(b.label) && b.count >= 1),
+            "Bucket '28-32' attendu pour adx=30; buckets: " +
+                r.byAdx.stream().map(b -> b.label + "×" + b.count)
+                    .collect(java.util.stream.Collectors.joining(", ")));
+    }
+
+    @Test
+    @TestTransaction
+    void analyzeHistory_rsi65_bucketedAsRsi6072() {
+        ScalpingTrade trade = newClosedTrade("LONG", 95000, 95300, 12.0, 0.114);
+        trade.persist();
+        newPlacedLog(trade.id, 30.0, 65.0, 75, 3, 0).persist(); // rsi=65 → "RSI 60-72"
+
+        BinanceScalpingTradeService.AnalyticsReport r = svc.analyzeHistory(1);
+
+        assertTrue(
+            r.byRsiZone.stream().anyMatch(b -> "RSI 60-72".equals(b.label) && b.count >= 1),
+            "Bucket 'RSI 60-72' attendu pour rsi=65; buckets: " +
+                r.byRsiZone.stream().map(b -> b.label)
+                    .collect(java.util.stream.Collectors.joining(", ")));
+    }
+
+    @Test
+    @TestTransaction
+    void analyzeHistory_waitBreakdown_adxGateClassified() {
+        ScalpingTradeLog wait = new ScalpingTradeLog();
+        wait.outcome   = "wait";
+        wait.loggedAt  = Instant.now().minusSeconds(1800);
+        wait.reasoning = "ADX=24.5 — marché en RANGE (seuil 28), scalping suspendu.";
+        wait.persist();
+
+        BinanceScalpingTradeService.AnalyticsReport r = svc.analyzeHistory(1);
+
+        assertTrue(r.waitBreakdown.total    >= 1, "total doit être >= 1");
+        assertTrue(r.waitBreakdown.adxGate  >= 1, "adxGate doit capter 'ADX' + 'range'");
+    }
+
+    @Test
+    @TestTransaction
+    void analyzeHistory_waitBreakdown_ttmSqueezeClassified() {
+        ScalpingTradeLog wait = new ScalpingTradeLog();
+        wait.outcome   = "wait";
+        wait.loggedAt  = Instant.now().minusSeconds(1800);
+        wait.reasoning = "TTM Squeeze actif — BB dans KC, volatilité insuffisante.";
+        wait.persist();
+
+        BinanceScalpingTradeService.AnalyticsReport r = svc.analyzeHistory(1);
+
+        assertTrue(r.waitBreakdown.ttmSqueeze >= 1, "ttmSqueeze doit capter 'ttm'");
+    }
+
+    // ── reconcileTradeHistory ─────────────────────────────────────────────────
+
+    @Test
+    void reconcileHistory_notConfigured_returnsError() {
+        when(futuresService.isConfigured()).thenReturn(false);
+        BinanceScalpingTradeService.HistoryReconcileReport r = svc.reconcileTradeHistory(7);
+        assertEquals("ERREUR", r.status);
+        assertNotNull(r.summary);
+    }
+
+    @Test
+    void reconcileHistory_noLocalTrades_noFills_returnsOk() throws Exception {
+        // days=0 → sinceMs = now → openedAt >= now matches nothing
+        when(futuresService.getUserTradesFrom(any(), anyLong(), anyInt())).thenReturn("[]");
+        BinanceScalpingTradeService.HistoryReconcileReport r = svc.reconcileTradeHistory(0);
+        assertEquals("OK", r.status);
+        assertEquals(0, r.localClosedCount);
+        assertEquals(0, r.binanceFillCount);
+        assertTrue(r.discrepancies.isEmpty());
+    }
+
+    @Test
+    void reconcileHistory_orphanBinanceFill_detectedAsWarning() throws Exception {
+        // days=0 → no local trades; Binance has a realized-PnL fill → orphan warning
+        long now = Instant.now().toEpochMilli();
+        String fills = String.format(Locale.US,
+            "[{\"side\":\"SELL\",\"price\":\"95000.0\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"5.5\",\"time\":%d}]", now);
+        when(futuresService.getUserTradesFrom(any(), anyLong(), anyInt())).thenReturn(fills);
+
+        BinanceScalpingTradeService.HistoryReconcileReport r = svc.reconcileTradeHistory(0);
+
+        assertEquals("AVERTISSEMENTS", r.status);
+        assertEquals(0, r.errorsCount);
+        assertEquals(1, r.warningsCount);
+        BinanceScalpingTradeService.HistoryDiscrepancy d = r.discrepancies.get(0);
+        assertEquals("ORPHAN_FILL", d.type);
+        assertEquals("BINANCE",     d.origin);
+        assertEquals("WARNING",     d.severity);
+        assertEquals(-1L,           d.tradeId);
+    }
+
+    @Test
+    @TestTransaction
+    void reconcileHistory_binanceEmpty_closedTrade_missingFillsDetected() throws Exception {
+        // Insert a closed LONG trade; Binance returns [] → MISSING_ENTRY_FILL + MISSING_EXIT_FILL
+        ScalpingTrade t = newClosedTrade("LONG", 95000.0, 95300.0, 12.0, 0.1);
+        t.persist();
+        long id = t.id;
+
+        when(futuresService.getUserTradesFrom(any(), anyLong(), anyInt())).thenReturn("[]");
+
+        BinanceScalpingTradeService.HistoryReconcileReport r = svc.reconcileTradeHistory(1);
+
+        List<BinanceScalpingTradeService.HistoryDiscrepancy> mine = discOf(r, id);
+        assertTrue(mine.stream().anyMatch(d -> "MISSING_ENTRY_FILL".equals(d.type)),
+            "MISSING_ENTRY_FILL expected; got: " + mine);
+        assertTrue(mine.stream().anyMatch(d -> "MISSING_EXIT_FILL".equals(d.type)),
+            "MISSING_EXIT_FILL expected; got: " + mine);
+        assertTrue(mine.stream().allMatch(d -> "ERROR".equals(d.severity)));
+        assertTrue(mine.stream().allMatch(d -> "BINANCE".equals(d.origin)));
+        assertEquals("ERREURS_DÉTECTÉES", r.status);
+    }
+
+    @Test
+    @TestTransaction
+    void reconcileHistory_entryPriceMismatch_detectedForInsertedTrade() throws Exception {
+        Instant openT  = Instant.now().minusSeconds(3600);
+        Instant closeT = Instant.now().minusSeconds(1800);
+        ScalpingTrade t = newClosedTrade("LONG", 95000.0, 95300.0, 12.0, 0.114);
+        t.openedAt = openT;
+        t.closedAt = closeT;
+        t.persist();
+        long id = t.id;
+
+        // Entry fill: price 0.5% above stored entryPrice → WARNING (< 0.8% threshold)
+        double binanceEntry = 95000.0 * 1.005; // 95475.0
+        String fills = String.format(Locale.US,
+            "[{\"side\":\"BUY\",\"price\":\"%.1f\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"0.0\",\"time\":%d}," +
+            "{\"side\":\"SELL\",\"price\":\"95300.0\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"12.0\",\"time\":%d}]",
+            binanceEntry,
+            openT.toEpochMilli()  + 1000,
+            closeT.toEpochMilli() + 1000);
+        when(futuresService.getUserTradesFrom(any(), anyLong(), anyInt())).thenReturn(fills);
+
+        BinanceScalpingTradeService.HistoryReconcileReport r = svc.reconcileTradeHistory(1);
+
+        List<BinanceScalpingTradeService.HistoryDiscrepancy> mine = discOf(r, id);
+        BinanceScalpingTradeService.HistoryDiscrepancy mismatch = mine.stream()
+            .filter(d -> "ENTRY_PRICE_MISMATCH".equals(d.type))
+            .findFirst().orElse(null);
+        assertNotNull(mismatch, "ENTRY_PRICE_MISMATCH expected; got: " + mine);
+        assertEquals("LOCAL",   mismatch.origin);
+        assertEquals("WARNING", mismatch.severity);
+        assertTrue(mismatch.localValue.contains("95000"), "localValue should contain stored entry price");
+    }
+
+    @Test
+    @TestTransaction
+    void reconcileHistory_entryPriceLargeGap_detectedAsError() throws Exception {
+        Instant openT  = Instant.now().minusSeconds(3600);
+        Instant closeT = Instant.now().minusSeconds(1800);
+        ScalpingTrade t = newClosedTrade("SHORT", 95000.0, 94700.0, 10.0, 0.114);
+        t.openedAt = openT;
+        t.closedAt = closeT;
+        t.persist();
+        long id = t.id;
+
+        // Entry fill: price 1% above stored entryPrice → ERROR (> 0.8% threshold)
+        double binanceEntry = 95000.0 * 1.01; // 95950.0
+        String fills = String.format(Locale.US,
+            "[{\"side\":\"SELL\",\"price\":\"%.1f\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"0.0\",\"time\":%d}," +
+            "{\"side\":\"BUY\",\"price\":\"94700.0\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"10.0\",\"time\":%d}]",
+            binanceEntry,
+            openT.toEpochMilli()  + 1000,
+            closeT.toEpochMilli() + 1000);
+        when(futuresService.getUserTradesFrom(any(), anyLong(), anyInt())).thenReturn(fills);
+
+        BinanceScalpingTradeService.HistoryReconcileReport r = svc.reconcileTradeHistory(1);
+
+        List<BinanceScalpingTradeService.HistoryDiscrepancy> mine = discOf(r, id);
+        BinanceScalpingTradeService.HistoryDiscrepancy mismatch = mine.stream()
+            .filter(d -> "ENTRY_PRICE_MISMATCH".equals(d.type))
+            .findFirst().orElse(null);
+        assertNotNull(mismatch, "ENTRY_PRICE_MISMATCH expected; got: " + mine);
+        assertEquals("ERROR", mismatch.severity);
+    }
+
+    @Test
+    @TestTransaction
+    void reconcileHistory_pnlMismatch_detectedAsWarning() throws Exception {
+        Instant openT  = Instant.now().minusSeconds(3600);
+        Instant closeT = Instant.now().minusSeconds(1800);
+        ScalpingTrade t = newClosedTrade("LONG", 95000.0, 95300.0, 12.0, 0.114);
+        t.openedAt = openT;
+        t.closedAt = closeT;
+        t.persist();
+        long id = t.id;
+
+        // Binance shows realizedPnl=8.5 → gap of 3.5 > 1.5 threshold → PNL_MISMATCH
+        String fills = String.format(Locale.US,
+            "[{\"side\":\"BUY\",\"price\":\"95000.0\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"0.0\",\"time\":%d}," +
+            "{\"side\":\"SELL\",\"price\":\"95300.0\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"8.5\",\"time\":%d}]",
+            openT.toEpochMilli()  + 1000,
+            closeT.toEpochMilli() + 1000);
+        when(futuresService.getUserTradesFrom(any(), anyLong(), anyInt())).thenReturn(fills);
+
+        BinanceScalpingTradeService.HistoryReconcileReport r = svc.reconcileTradeHistory(1);
+
+        List<BinanceScalpingTradeService.HistoryDiscrepancy> mine = discOf(r, id);
+        BinanceScalpingTradeService.HistoryDiscrepancy mismatch = mine.stream()
+            .filter(d -> "PNL_MISMATCH".equals(d.type))
+            .findFirst().orElse(null);
+        assertNotNull(mismatch, "PNL_MISMATCH expected; got: " + mine);
+        assertEquals("WARNING", mismatch.severity);
+        assertEquals("LOCAL",   mismatch.origin);
+        assertTrue(mismatch.localValue.contains("12.00"),   "localValue should mention stored PnL 12.00");
+        assertTrue(mismatch.binanceValue.contains("8.50"),  "binanceValue should mention Binance PnL 8.50");
+    }
+
+    @Test
+    @TestTransaction
+    void reconcileHistory_feeMismatch_detectedAsWarning() throws Exception {
+        Instant openT  = Instant.now().minusSeconds(3600);
+        Instant closeT = Instant.now().minusSeconds(1800);
+        ScalpingTrade t = newClosedTrade("LONG", 95000.0, 95300.0, 12.0, 2.0); // stored fees=2.0
+        t.openedAt = openT;
+        t.closedAt = closeT;
+        t.persist();
+        long id = t.id;
+
+        // Binance commissions sum = 0.057+0.057 = 0.114 → gap = |2.0-0.114| = 1.886 > 0.5 → FEE_MISMATCH
+        String fills = String.format(Locale.US,
+            "[{\"side\":\"BUY\",\"price\":\"95000.0\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"0.0\",\"time\":%d}," +
+            "{\"side\":\"SELL\",\"price\":\"95300.0\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"12.0\",\"time\":%d}]",
+            openT.toEpochMilli()  + 1000,
+            closeT.toEpochMilli() + 1000);
+        when(futuresService.getUserTradesFrom(any(), anyLong(), anyInt())).thenReturn(fills);
+
+        BinanceScalpingTradeService.HistoryReconcileReport r = svc.reconcileTradeHistory(1);
+
+        List<BinanceScalpingTradeService.HistoryDiscrepancy> mine = discOf(r, id);
+        assertTrue(mine.stream().anyMatch(d -> "FEE_MISMATCH".equals(d.type)),
+            "FEE_MISMATCH expected; got: " + mine);
+    }
+
+    @Test
+    @TestTransaction
+    void reconcileHistory_perfectMatch_noDiscrepanciesForInsertedTrade() throws Exception {
+        Instant openT  = Instant.now().minusSeconds(3600);
+        Instant closeT = Instant.now().minusSeconds(1800);
+        ScalpingTrade t = newClosedTrade("LONG", 95000.0, 95300.0, 12.0, 0.114);
+        t.openedAt = openT;
+        t.closedAt = closeT;
+        t.persist();
+        long id = t.id;
+
+        // Binance fills exactly match: entry price 95000, exit price 95300, realizedPnl 12.0, fees 0.114
+        String fills = String.format(Locale.US,
+            "[{\"side\":\"BUY\",\"price\":\"95000.0\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"0.0\",\"time\":%d}," +
+            "{\"side\":\"SELL\",\"price\":\"95300.0\",\"qty\":\"0.002\"," +
+            "\"commission\":\"0.057\",\"realizedPnl\":\"12.0\",\"time\":%d}]",
+            openT.toEpochMilli()  + 500,
+            closeT.toEpochMilli() + 500);
+        when(futuresService.getUserTradesFrom(any(), anyLong(), anyInt())).thenReturn(fills);
+
+        BinanceScalpingTradeService.HistoryReconcileReport r = svc.reconcileTradeHistory(1);
+
+        List<BinanceScalpingTradeService.HistoryDiscrepancy> mine = discOf(r, id);
+        assertTrue(mine.isEmpty(),
+            "Perfect match → no discrepancies for trade #" + id + "; got: " + mine);
+        // Global counts might include discrepancies from other DB trades — only check per-id
+        assertTrue(r.localClosedCount >= 1);
+        assertTrue(r.binanceFillCount >= 2);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /** Convenience: discrepancies in report that belong to a specific trade id. */
+    private List<BinanceScalpingTradeService.HistoryDiscrepancy> discOf(
+            BinanceScalpingTradeService.HistoryReconcileReport r, long id) {
+        return r.discrepancies.stream()
+            .filter(d -> d.tradeId == id)
+            .collect(java.util.stream.Collectors.toList());
+    }
+
+    private ScalpingTradeLog newPlacedLog(long tradeId, double adx, double rsi,
+                                          int confidence, int longTfCount, int shortTfCount) {
+        ScalpingTradeLog l = new ScalpingTradeLog();
+        l.outcome      = "placed";
+        l.tradeId      = tradeId;
+        l.loggedAt     = Instant.now().minusSeconds(3600);
+        l.direction    = longTfCount >= shortTfCount ? "LONG" : "SHORT";
+        l.confidence   = confidence;
+        l.currentPrice = 95000.0;
+        l.adx          = adx;
+        l.rsi          = rsi;
+        l.longTfCount  = longTfCount;
+        l.shortTfCount = shortTfCount;
+        l.pillar1Score = longTfCount * 10;
+        l.pillar2Score = 20;
+        l.pillar3Score = 15;
+        l.cvdPct       = 10.0;
+        l.volumeRatio  = 1.5;
+        l.macdHistogram= 0.5;
+        l.stochK       = 60;
+        l.stochD       = 55;
+        return l;
+    }
+
+    private ScalpingTrade newClosedTrade(String dir, double entry, double exit,
+                                         double pnl, double fees) {
+        ScalpingTrade t = new ScalpingTrade();
+        t.direction  = dir;
+        t.entryPrice = entry;
+        t.exitPrice  = exit;
+        t.tpPrice    = exit;
+        t.slPrice    = "LONG".equals(dir) ? entry * 0.99 : entry * 1.01;
+        t.pnl        = pnl;
+        t.pnlNet     = pnl - fees;
+        t.fees       = fees;
+        t.status     = "TP";
+        t.openedAt   = Instant.now().minusSeconds(3600);
+        t.closedAt   = Instant.now().minusSeconds(1800);
+        t.amountUsdt = 50.0;
+        t.leverage   = 10;
+        t.confidence = 75;
+        return t;
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────

@@ -38,4 +38,8 @@ public class ScalpingTrade extends PanacheEntity {
     public static ScalpingTrade findOpenTrade() {
         return find("status", "OPEN").firstResult();
     }
+
+    public static List<ScalpingTrade> findClosedAfter(Instant since) {
+        return find("closedAt IS NOT NULL AND openedAt >= ?1 ORDER BY openedAt ASC", since).list();
+    }
 }

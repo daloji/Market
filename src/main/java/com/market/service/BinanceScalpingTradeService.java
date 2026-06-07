@@ -11,10 +11,15 @@ import jakarta.transaction.Transactional;
 import org.jboss.logging.Logger;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1127,6 +1132,218 @@ public class BinanceScalpingTradeService {
         }
     }
 
+    /**
+     * Reconciles closed local trades against Binance fills for the last {@code days} days.
+     * Detects: missing fills, price mismatches, PnL gaps, orphan Binance fills.
+     * GET /api/scalping/reconcile-history?days=7
+     */
+    @Transactional
+    public HistoryReconcileReport reconcileTradeHistory(int days) {
+        if (!futuresService.isConfigured()) {
+            HistoryReconcileReport err = new HistoryReconcileReport();
+            err.status = "ERREUR";
+            err.summary = "Binance API non configurée";
+            return err;
+        }
+
+        long sinceMs = Instant.now().minusSeconds((long) days * 86400L).toEpochMilli();
+        Instant since = Instant.ofEpochMilli(sinceMs);
+
+        List<ScalpingTrade> local = ScalpingTrade.findClosedAfter(since);
+        List<BinanceFill>   fills = fetchBinanceFillsFrom(sinceMs, 500);
+
+        List<HistoryDiscrepancy> disc = new ArrayList<>();
+        Set<Integer> usedFills = new HashSet<>();
+
+        for (ScalpingTrade t : local) {
+            if (t.closedAt == null) continue;
+
+            String openSide  = "LONG".equals(t.direction) ? "BUY"  : "SELL";
+            String closeSide = "LONG".equals(t.direction) ? "SELL" : "BUY";
+            long   openMs    = t.openedAt.toEpochMilli();
+            long   closeMs   = t.closedAt.toEpochMilli();
+            long   ENTRY_WIN = 5 * 60_000L;    // ±5 min pour le fill d'entrée
+            long   EXIT_WIN  = 10 * 60_000L;   // closedAt + 10 min pour le fill de sortie
+
+            // ── Entry fills ───────────────────────────────────────────────────
+            List<BinanceFill> entryFills = new ArrayList<>();
+            for (BinanceFill f : fills) {
+                if (openSide.equals(f.side)
+                        && Math.abs(f.realizedPnl) < 1.0
+                        && f.time >= openMs - ENTRY_WIN
+                        && f.time <= openMs + ENTRY_WIN) {
+                    entryFills.add(f);
+                }
+            }
+
+            double binanceEntryPrice = 0;
+            if (entryFills.isEmpty()) {
+                disc.add(mkDisc(t.id, "ERROR", "MISSING_ENTRY_FILL", "BINANCE",
+                    String.format(Locale.US, "[trade #%d %s] Aucun fill d'entrée %s trouvé sur Binance autour de %s",
+                        t.id, t.direction, openSide, t.openedAt),
+                    String.format(Locale.US, "%.1f", t.entryPrice), "—", t.openedAt, t.closedAt));
+            } else {
+                for (BinanceFill f : entryFills) usedFills.add(f.index);
+                double sumQty = 0, sumVal = 0;
+                for (BinanceFill f : entryFills) { sumQty += f.qty; sumVal += f.price * f.qty; }
+                binanceEntryPrice = sumQty > 0 ? sumVal / sumQty : 0;
+                if (binanceEntryPrice > 0 && t.entryPrice > 0) {
+                    double pct = Math.abs(binanceEntryPrice - t.entryPrice) / t.entryPrice * 100.0;
+                    if (pct > 0.3) {
+                        disc.add(mkDisc(t.id, pct > 0.8 ? "ERROR" : "WARNING",
+                            "ENTRY_PRICE_MISMATCH", "LOCAL",
+                            String.format(Locale.US, "[trade #%d %s] Prix entrée LOCAL=%.1f ≠ BINANCE=%.1f (écart %.2f%%)",
+                                t.id, t.direction, t.entryPrice, binanceEntryPrice, pct),
+                            String.format(Locale.US, "%.1f", t.entryPrice),
+                            String.format(Locale.US, "%.1f", binanceEntryPrice),
+                            t.openedAt, t.closedAt));
+                    }
+                }
+            }
+
+            // ── Exit fills ────────────────────────────────────────────────────
+            List<BinanceFill> exitFills = new ArrayList<>();
+            for (BinanceFill f : fills) {
+                if (closeSide.equals(f.side)
+                        && Math.abs(f.realizedPnl) >= 0.01
+                        && f.time >= openMs - 2 * 60_000L
+                        && f.time <= closeMs + EXIT_WIN) {
+                    exitFills.add(f);
+                }
+            }
+
+            if (exitFills.isEmpty()) {
+                disc.add(mkDisc(t.id, "ERROR", "MISSING_EXIT_FILL", "BINANCE",
+                    String.format(Locale.US, "[trade #%d %s] Aucun fill de sortie %s trouvé sur Binance (exitPrice=%.1f)",
+                        t.id, t.direction, closeSide, t.exitPrice),
+                    String.format(Locale.US, "%.1f", t.exitPrice), "—", t.openedAt, t.closedAt));
+            } else {
+                for (BinanceFill f : exitFills) usedFills.add(f.index);
+
+                // PnL brut (somme realizedPnl de tous les fills de sortie)
+                double binancePnl = 0;
+                for (BinanceFill f : exitFills) binancePnl += f.realizedPnl;
+                double pnlDiff = Math.abs(binancePnl - t.pnl);
+                if (pnlDiff > 1.5) {
+                    disc.add(mkDisc(t.id, "WARNING", "PNL_MISMATCH", "LOCAL",
+                        String.format(Locale.US, "[trade #%d %s] PnL brut LOCAL=%.2f$ ≠ BINANCE=%.2f$ (écart %.2f$)",
+                            t.id, t.direction, t.pnl, binancePnl, pnlDiff),
+                        String.format(Locale.US, "%.2f$", t.pnl),
+                        String.format(Locale.US, "%.2f$", binancePnl),
+                        t.openedAt, t.closedAt));
+                }
+
+                // Frais totaux (entrée + sortie)
+                double entryFees = 0;
+                for (BinanceFill f : entryFills) entryFees += f.commission;
+                double exitFees = 0;
+                for (BinanceFill f : exitFills) exitFees += f.commission;
+                double binanceFees = entryFees + exitFees;
+                if (t.fees > 0) {
+                    double feeDiff = Math.abs(binanceFees - t.fees);
+                    if (feeDiff > 0.5) {
+                        disc.add(mkDisc(t.id, "WARNING", "FEE_MISMATCH", "LOCAL",
+                            String.format(Locale.US, "[trade #%d %s] Frais LOCAL=%.4f$ ≠ BINANCE=%.4f$ (écart %.4f$)",
+                                t.id, t.direction, t.fees, binanceFees, feeDiff),
+                            String.format(Locale.US, "%.4f$", t.fees),
+                            String.format(Locale.US, "%.4f$", binanceFees),
+                            t.openedAt, t.closedAt));
+                    }
+                }
+
+                // Prix de sortie — uniquement si trade simple (pas de TP1 split)
+                if (!t.tp1Hit && exitFills.size() == 1 && t.exitPrice > 0) {
+                    BinanceFill ef = exitFills.get(0);
+                    double pct = Math.abs(ef.price - t.exitPrice) / t.exitPrice * 100.0;
+                    if (pct > 0.3) {
+                        disc.add(mkDisc(t.id, pct > 0.8 ? "ERROR" : "WARNING",
+                            "EXIT_PRICE_MISMATCH", "LOCAL",
+                            String.format(Locale.US, "[trade #%d %s] Prix sortie LOCAL=%.1f ≠ BINANCE=%.1f (écart %.2f%%)",
+                                t.id, t.direction, t.exitPrice, ef.price, pct),
+                            String.format(Locale.US, "%.1f", t.exitPrice),
+                            String.format(Locale.US, "%.1f", ef.price),
+                            t.openedAt, t.closedAt));
+                    }
+                }
+            }
+        }
+
+        // ── Orphan Binance fills (non liés à un trade local) ─────────────────
+        for (BinanceFill f : fills) {
+            if (!usedFills.contains(f.index) && Math.abs(f.realizedPnl) >= 0.5) {
+                disc.add(mkDisc(-1L, "WARNING", "ORPHAN_FILL", "BINANCE",
+                    String.format(Locale.US, "Fill Binance sans trade local correspondant: %s %.4f BTC @ %.1f, realizedPnl=%.2f$",
+                        f.side, f.qty, f.price, f.realizedPnl),
+                    "—",
+                    String.format(Locale.US, "%s %.4f BTC @ %.1f (PnL=%.2f$)", f.side, f.qty, f.price, f.realizedPnl),
+                    Instant.ofEpochMilli(f.time), null));
+            }
+        }
+
+        long errors   = 0, warnings = 0;
+        for (HistoryDiscrepancy d : disc) {
+            if ("ERROR".equals(d.severity))   errors++;
+            else if ("WARNING".equals(d.severity)) warnings++;
+        }
+
+        HistoryReconcileReport r = new HistoryReconcileReport();
+        r.period           = days + " jour(s)";
+        r.localClosedCount = local.size();
+        r.binanceFillCount = fills.size();
+        r.errorsCount      = (int) errors;
+        r.warningsCount    = (int) warnings;
+        r.discrepancies    = disc;
+        r.status           = disc.isEmpty() ? "OK"
+                             : (errors > 0 ? "ERREURS_DÉTECTÉES" : "AVERTISSEMENTS");
+        r.summary          = String.format(
+            "%d trade(s) local · %d fill(s) Binance · %d erreur(s) · %d avertissement(s) %s",
+            local.size(), fills.size(), (int) errors, (int) warnings,
+            disc.isEmpty() ? "✅" : "⚠");
+        LOG.infof("[Scalping] reconcileHistory(%dd): %s", days, r.summary);
+        return r;
+    }
+
+    private List<BinanceFill> fetchBinanceFillsFrom(long sinceMs, int limit) {
+        try {
+            String json = futuresService.getUserTradesFrom("BTCUSDT", sinceMs, limit);
+            com.fasterxml.jackson.databind.JsonNode arr =
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree(json);
+            List<BinanceFill> result = new ArrayList<>();
+            int idx = 0;
+            for (com.fasterxml.jackson.databind.JsonNode n : arr) {
+                BinanceFill f = new BinanceFill();
+                f.index       = idx++;
+                f.side        = n.path("side").asText();
+                f.price       = n.path("price").asDouble(0);
+                f.qty         = n.path("qty").asDouble(0);
+                f.commission  = Math.abs(n.path("commission").asDouble(0));
+                f.realizedPnl = n.path("realizedPnl").asDouble(0);
+                f.time        = n.path("time").asLong(0);
+                if (f.price > 0 && f.qty > 0) result.add(f);
+            }
+            return result;
+        } catch (Exception e) {
+            LOG.warnf("[Scalping] reconcileHistory: fetch fills Binance échoué: %s", e.getMessage());
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    private static HistoryDiscrepancy mkDisc(long tradeId, String severity, String type,
+            String origin, String description, String localVal, String binanceVal,
+            Instant openedAt, Instant closedAt) {
+        HistoryDiscrepancy d = new HistoryDiscrepancy();
+        d.tradeId     = tradeId;
+        d.severity    = severity;
+        d.type        = type;
+        d.origin      = origin;
+        d.description = description;
+        d.localValue  = localVal;
+        d.binanceValue= binanceVal;
+        d.openedAt    = openedAt  != null ? openedAt.toString()  : null;
+        d.closedAt    = closedAt  != null ? closedAt.toString()  : null;
+        return d;
+    }
+
     public Map<String, Object> statusMap() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("enabled",       enabled.get());
@@ -1421,6 +1638,313 @@ public class BinanceScalpingTradeService {
         static ScalpResult error(String msg) {
             ScalpResult r = new ScalpResult(); r.status = "error"; r.message = msg; return r;
         }
+    }
+
+    // ── Analytics ─────────────────────────────────────────────────────────────
+
+    /**
+     * Analyse empirique des trades passés : win rate par indicateur, heure, pilier, gate WAIT.
+     * GET /api/scalping/analytics?days=30
+     */
+    @Transactional
+    public AnalyticsReport analyzeHistory(int days) {
+        Instant since = Instant.now().minusSeconds((long) days * 86400L);
+
+        // ── Collect placed trades with known outcome ───────────────────────────
+        List<ScalpingTradeLog> placedLogs = ScalpingTradeLog.findPlacedAfter(since);
+
+        Map<Long, ScalpingTrade> tradeMap = new HashMap<>();
+        for (ScalpingTradeLog l : placedLogs) {
+            if (l.tradeId == null || tradeMap.containsKey(l.tradeId)) continue;
+            ScalpingTrade t = ScalpingTrade.findById(l.tradeId);
+            if (t != null && t.closedAt != null) tradeMap.put(l.tradeId, t);
+        }
+
+        List<Entry> entries = new ArrayList<>();
+        for (ScalpingTradeLog l : placedLogs) {
+            ScalpingTrade t = l.tradeId != null ? tradeMap.get(l.tradeId) : null;
+            if (t != null) entries.add(new Entry(l, t));
+        }
+
+        // ── WAIT breakdown — calculé avant le early-return pour être toujours disponible ──
+        List<ScalpingTradeLog> waitLogs = ScalpingTradeLog.findWaitAfter(since);
+        WaitBreakdown wb = buildWaitBreakdown(waitLogs);
+
+        AnalyticsReport r = new AnalyticsReport();
+        r.period        = days + " jour(s)";
+        r.totalTrades   = entries.size();
+        r.waitBreakdown = wb;
+
+        if (entries.isEmpty()) {
+            r.status    = "PAS_DE_DONNÉES";
+            r.topInsight = "Aucun trade fermé sur cette période. Augmentez la fenêtre avec ?days=N.";
+            r.byConfidence = r.byAdx = r.byHour = r.byTfAlignment = r.byRsiZone =
+                r.byCvd = r.byVolumeRatio = r.byOutcomeType =
+                r.byPillar1 = r.byPillar2 = r.byPillar3 = new ArrayList<>();
+            return r;
+        }
+
+        long wins = 0;
+        double totalPnl = 0;
+        for (Entry e : entries) {
+            if (e.t.pnlNet > 0) wins++;
+            totalPnl += e.t.pnlNet;
+        }
+        r.winCount   = (int) wins;
+        r.lossCount  = entries.size() - r.winCount;
+        r.winRate    = wins * 100.0 / entries.size();
+        r.avgPnlNet  = totalPnl / entries.size();
+        r.totalPnlNet= totalPnl;
+
+        // ── Per-bucket win rates ───────────────────────────────────────────────
+        r.byConfidence   = bucket(entries, e -> {
+            int c = e.l.confidence;
+            return c < 65 ? "60-64" : c < 70 ? "65-69" : c < 75 ? "70-74"
+                 : c < 80 ? "75-79" : c < 90 ? "80-89" : "90+";
+        }, true);
+
+        r.byAdx = bucket(entries, e -> {
+            double a = e.l.adx;
+            return a < 22 ? "<22" : a < 25 ? "22-25" : a < 28 ? "25-28"
+                 : a < 32 ? "28-32" : a < 38 ? "32-38" : "38+";
+        }, true);
+
+        r.byHour = bucket(entries, e -> {
+            int h = e.l.loggedAt.atZone(java.time.ZoneOffset.UTC).getHour();
+            return h < 4 ? "00-04h" : h < 8 ? "04-08h" : h < 12 ? "08-12h"
+                 : h < 16 ? "12-16h" : h < 20 ? "16-20h" : "20-24h";
+        }, true);
+
+        r.byTfAlignment = bucket(entries, e -> {
+            int aligned = Math.max(e.l.longTfCount, e.l.shortTfCount);
+            return aligned + "/3 TFs";
+        }, true);
+
+        r.byRsiZone = bucket(entries, e -> {
+            double rsi = e.l.rsi;
+            return rsi < 30 ? "RSI <30" : rsi < 40 ? "RSI 30-40" : rsi < 52 ? "RSI 40-52"
+                 : rsi < 60 ? "RSI 52-60" : rsi < 72 ? "RSI 60-72" : "RSI 72+";
+        }, true);
+
+        r.byCvd = bucket(entries, e -> {
+            double cvd = e.l.cvdPct;
+            return cvd > 15 ? "CVD bull fort" : cvd > 5 ? "CVD bull léger"
+                 : cvd < -15 ? "CVD bear fort" : cvd < -5 ? "CVD bear léger" : "CVD neutre";
+        }, true);
+
+        r.byVolumeRatio = bucket(entries, e -> {
+            double vr = e.l.volumeRatio;
+            return vr < 1.0 ? "Vol <1.0×" : vr < 1.3 ? "Vol 1.0-1.3×"
+                 : vr < 2.0 ? "Vol 1.3-2.0×" : "Vol 2.0×+";
+        }, true);
+
+        r.byOutcomeType = bucket(entries, e -> e.t.status, false);
+
+        r.byPillar1 = bucket(entries, e -> {
+            int p = Math.abs(e.l.pillar1Score);
+            return p < 10 ? "P1 <10" : p < 20 ? "P1 10-20" : p < 30 ? "P1 20-30" : "P1 30-40";
+        }, true);
+        r.byPillar2 = bucket(entries, e -> {
+            int p = Math.abs(e.l.pillar2Score);
+            return p < 10 ? "P2 <10" : p < 20 ? "P2 10-20" : p < 30 ? "P2 20-30" : "P2 30+";
+        }, true);
+        r.byPillar3 = bucket(entries, e -> {
+            int p = Math.abs(e.l.pillar3Score);
+            return p < 8 ? "P3 <8" : p < 15 ? "P3 8-15" : p < 22 ? "P3 15-22" : "P3 22+";
+        }, true);
+
+        // ── Top insight ───────────────────────────────────────────────────────
+        r.topInsight = buildInsight(r, entries);
+        r.status = "OK";
+        return r;
+    }
+
+    /** Classifier une liste d'entries en buckets et calculer le win rate de chacun. */
+    private interface Bucketer { String bucket(Entry e); }
+
+    private List<AnalyticsBucket> bucket(List<Entry> entries, Bucketer fn, boolean sortByLabel) {
+        Map<String, List<Entry>> groups = new LinkedHashMap<>();
+        for (Entry e : entries) {
+            String key = fn.bucket(e);
+            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(e);
+        }
+        List<AnalyticsBucket> result = new ArrayList<>();
+        for (Map.Entry<String, List<Entry>> me : groups.entrySet()) {
+            List<Entry> g = me.getValue();
+            AnalyticsBucket b = new AnalyticsBucket();
+            b.label = me.getKey();
+            b.count = g.size();
+            long w = 0; double pnl = 0;
+            for (Entry e : g) { if (e.t.pnlNet > 0) w++; pnl += e.t.pnlNet; }
+            b.winRate    = b.count == 0 ? 0 : Math.round(w * 1000.0 / b.count) / 10.0;
+            b.avgPnlNet  = Math.round(pnl / b.count * 100) / 100.0;
+            b.totalPnlNet= Math.round(pnl * 100) / 100.0;
+            result.add(b);
+        }
+        if (sortByLabel) result.sort(Comparator.comparing(b -> b.label));
+        else             result.sort((a, b) -> Integer.compare(b.count, a.count));
+        return result;
+    }
+
+    private WaitBreakdown buildWaitBreakdown(List<ScalpingTradeLog> logs) {
+        WaitBreakdown wb = new WaitBreakdown();
+        wb.total = logs.size();
+        for (ScalpingTradeLog l : logs) {
+            String r = l.reasoning != null ? l.reasoning.toLowerCase() : "";
+            if      (r.contains("ttm") || r.contains("squeeze"))           wb.ttmSqueeze++;
+            else if (r.contains("atr trop bas") || r.contains("adaptatif"))wb.atrGate++;
+            else if (r.contains("adx") && r.contains("range"))             wb.adxGate++;
+            else if (r.contains("tfs insuffisants") || r.contains("insuffisants"))wb.tfAlignment++;
+            else if (r.contains("vol<") || r.contains("vol <"))            wb.volumeGate++;
+            else if (r.contains("ms1m") || r.contains("market structure")) wb.marketStructure++;
+            else if (r.contains("score insuffisant"))                       wb.scoreTooLow++;
+            else                                                            wb.other++;
+        }
+        return wb;
+    }
+
+    private String buildInsight(AnalyticsReport r, List<Entry> entries) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("Bilan: %d trades · WR %.1f%% · PnL net total %.2f$ · moy %.2f$/trade. ",
+            r.totalTrades, r.winRate, r.totalPnlNet, r.avgPnlNet));
+
+        // Meilleure heure
+        r.byHour.stream().filter(b -> b.count >= 2)
+            .max(Comparator.comparingDouble(b -> b.winRate))
+            .ifPresent(best -> sb.append(String.format(Locale.US,
+                "Meilleure heure UTC: %s → %.1f%% WR (%d trades). ", best.label, best.winRate, best.count)));
+
+        // ADX insight — est-ce que 25-28 est comparable à 28-32 ?
+        AnalyticsBucket adx2528 = r.byAdx.stream().filter(b -> "25-28".equals(b.label)).findFirst().orElse(null);
+        AnalyticsBucket adx2832 = r.byAdx.stream().filter(b -> "28-32".equals(b.label)).findFirst().orElse(null);
+        if (adx2528 != null && adx2832 != null && adx2528.count >= 2 && adx2832.count >= 2) {
+            if (adx2528.winRate >= adx2832.winRate - 8) {
+                sb.append(String.format(Locale.US,
+                    "⚠ ADX 25-28 WR=%.1f%% vs 28-32 WR=%.1f%% → seuil 28 peut-être trop strict. ",
+                    adx2528.winRate, adx2832.winRate));
+            }
+        }
+
+        // Pilier avec meilleure corrélation WR
+        String bestPillar = null; double bestDelta = 0;
+        List<List<AnalyticsBucket>> pillars = List.of(r.byPillar1, r.byPillar2, r.byPillar3);
+        String[] pillarNames = {"Pilier1", "Pilier2", "Pilier3"};
+        for (int i = 0; i < 3; i++) {
+            List<AnalyticsBucket> p = pillars.get(i);
+            if (p.size() < 2) continue;
+            double maxWr = p.stream().filter(b -> b.count >= 2).mapToDouble(b -> b.winRate).max().orElse(0);
+            double minWr = p.stream().filter(b -> b.count >= 2).mapToDouble(b -> b.winRate).min().orElse(0);
+            double delta = maxWr - minWr;
+            if (delta > bestDelta) { bestDelta = delta; bestPillar = pillarNames[i]; }
+        }
+        if (bestPillar != null && bestDelta > 15) {
+            sb.append(String.format(Locale.US,
+                "%s a la plus forte corrélation avec l'outcome (écart WR %.0f%%). ", bestPillar, bestDelta));
+        }
+
+        // Worst outcome type
+        r.byOutcomeType.stream().filter(b -> b.count >= 2 && b.avgPnlNet < 0)
+            .min(Comparator.comparingDouble(b -> b.avgPnlNet))
+            .ifPresent(worst -> sb.append(String.format(Locale.US,
+                "Outcome le plus coûteux: %s (moy %.2f$, %d fois). ", worst.label, worst.avgPnlNet, worst.count)));
+
+        return sb.toString();
+    }
+
+    // ── History reconciliation DTOs ───────────────────────────────────────────
+
+    /** One detected discrepancy between local DB and Binance fills. */
+    public static class HistoryDiscrepancy {
+        public long   tradeId;      // local DB id; -1 = orphan Binance fill
+        public String severity;     // ERROR | WARNING
+        public String type;         // MISSING_ENTRY_FILL | MISSING_EXIT_FILL |
+                                    // ENTRY_PRICE_MISMATCH | EXIT_PRICE_MISMATCH |
+                                    // PNL_MISMATCH | FEE_MISMATCH | ORPHAN_FILL
+        public String origin;       // LOCAL (our data wrong) | BINANCE (fill absent)
+        public String description;  // human-readable explanation
+        public String localValue;   // value stored locally
+        public String binanceValue; // value found on Binance
+        public String openedAt;
+        public String closedAt;
+    }
+
+    /** Full reconciliation report returned by reconcileTradeHistory(). */
+    public static class HistoryReconcileReport {
+        public String period;
+        public int    localClosedCount;
+        public int    binanceFillCount;
+        public int    errorsCount;
+        public int    warningsCount;
+        public List<HistoryDiscrepancy> discrepancies;
+        public String status;   // OK | AVERTISSEMENTS | ERREURS_DÉTECTÉES | ERREUR
+        public String summary;
+    }
+
+    /** Internal: parsed Binance user-trade fill. */
+    private static class BinanceFill {
+        int    index;
+        String side;
+        double price;
+        double qty;
+        double commission;
+        double realizedPnl;
+        long   time;
+    }
+
+    // ── Analytics DTOs ────────────────────────────────────────────────────────
+
+    public static class AnalyticsReport {
+        public String  period;
+        public String  status;
+        public int     totalTrades;
+        public int     winCount;
+        public int     lossCount;
+        public double  winRate;        // %
+        public double  avgPnlNet;      // $ par trade
+        public double  totalPnlNet;    // $ cumulé
+        public String  topInsight;
+
+        public List<AnalyticsBucket> byConfidence;
+        public List<AnalyticsBucket> byAdx;
+        public List<AnalyticsBucket> byHour;
+        public List<AnalyticsBucket> byTfAlignment;
+        public List<AnalyticsBucket> byRsiZone;
+        public List<AnalyticsBucket> byCvd;
+        public List<AnalyticsBucket> byVolumeRatio;
+        public List<AnalyticsBucket> byOutcomeType;
+        public List<AnalyticsBucket> byPillar1;
+        public List<AnalyticsBucket> byPillar2;
+        public List<AnalyticsBucket> byPillar3;
+        public WaitBreakdown         waitBreakdown;
+    }
+
+    /** Win rate + PnL pour un bucket d'indicateur donné. */
+    public static class AnalyticsBucket {
+        public String label;
+        public int    count;
+        public double winRate;     // %
+        public double avgPnlNet;   // $
+        public double totalPnlNet; // $
+    }
+
+    /** Distribution des raisons de blocage des signaux WAIT. */
+    public static class WaitBreakdown {
+        public int total;
+        public int ttmSqueeze;
+        public int atrGate;
+        public int adxGate;
+        public int tfAlignment;
+        public int volumeGate;
+        public int marketStructure;
+        public int scoreTooLow;
+        public int other;
+    }
+
+    /** Internal pair (log + trade outcome) for analytics computations. */
+    private static class Entry {
+        final ScalpingTradeLog  l;
+        final ScalpingTrade     t;
+        Entry(ScalpingTradeLog l, ScalpingTrade t) { this.l = l; this.t = t; }
     }
 
     // ── Trade history DTO ─────────────────────────────────────────────────────
