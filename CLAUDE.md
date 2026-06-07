@@ -10,21 +10,26 @@
 | Fichier | Rôle |
 |---------|------|
 | `ScalpingAnalysisService.java` | Calcule le signal 1m (14 indicateurs, cache 10s) |
-| `BinanceScalpingTradeService.java` | Gère l'exécution et le suivi de position |
+| `BinanceScalpingTradeService.java` | Gère l'exécution, suivi, analytics et réconciliation |
 | `BinanceFuturesService.java` | Client REST Binance bas niveau (signing, clock sync) |
 | `TechnicalAnalysisService.java` | Calculs purs (RSI, EMA, ATR, VWAP, ADX, Stoch…) |
+| `TelegramAlertService.java` | Notifications sortantes + polling commandes entrantes |
+| `MarketScheduler.java` | Tâches planifiées — scalping 1m + polling Telegram 5s |
+| `ScalpingTrade.java` | Entité JPA (table `scalping_trade`) — finders : `findRecent`, `findOpenTrade`, `findClosedAfter` |
+| `ScalpingTradeLog.java` | Snapshot signal chaque cycle (table `scalping_signal_log`) — finders : `findPlacedAfter`, `findWaitAfter` |
 | `SCALPING_ALGO.md` | Spécification complète de l'algorithme |
 
 Tests :
 - `ScalpingAnalysisServiceTest.java` — 24 tests signal
-- `BinanceScalpingTradeServiceTest.java` — 29 tests trading
+- `BinanceScalpingTradeServiceTest.java` — 53 tests trading (dont 9 reconcileHistory)
 - `BinanceFuturesServiceTest.java` — 17 tests API
+- `TelegramAlertServiceTest.java` — 13 tests alertes
 
 ## Paramètres actuels (v5 — 2026-05-29)
 
 ```
 ATR gate       : max(0.08% plancher, medianTR50×50%) — adaptatif avec hard floor
-ADX gate       : 22 minimum (increased from 18) — filtre marché range
+ADX gate       : 28 minimum — filtre marché range (seuil strict)
 Timeframes     : 1m + 5m + 15m (macro gate obligatoire)
 Seuils signal  : 60 pts (3/3 TF alignés) / 75 pts (2/3 TF alignés)
                  WAIT absolu si ≤1/3 TF aligné
@@ -32,8 +37,10 @@ DEFAULT_AMOUNT : 50 USDT à 10× levier
 TP1 = 1.3×ATR (60% qty), TP2 = 2.6×ATR (40% qty), SL = 0.8×ATR
 R:R ~1.625 (TP1) / ~3.25 (TP2)
 
-Indicateurs v4: RSI(14), MACD(12,26,9), Stoch(14,3), Supertrend(10,3), ATR(14)
+Indicateurs v5: RSI(14), MACD(12,26,9), Stoch(14,3), Supertrend(10,3), ATR(14)
+Gates additionnels: volumeRatio < 1.0 → WAIT, MarketStructure1m contredit direction → WAIT
 3 piliers: Multi-TF Alignment (40) + Momentum Quality (40) + Volume/Flow (25)
++ bonus VWAP (+5), Market Structure (+5/+8), dernière bougie (+3)
 ```
 
 ## Patterns critiques
@@ -64,15 +71,61 @@ Quand `binanceHasPos=false` détecté, `reconcileClosedPosition()` appelle d'abo
 
 ## Endpoint scalping
 ```
-GET /api/crypto/btc/scalping   → signal complet + indicateurs
-GET /api/scalping/status       → état position active, wallet, cooldown
-POST /api/scalping/enable      → activer l'auto-trading
-POST /api/scalping/sync        → resync position si état incohérent
+GET  /api/crypto/btc/scalping          → signal complet + indicateurs
+GET  /api/scalping/status              → état position active, wallet, cooldown
+POST /api/scalping/enable              → activer l'auto-trading
+POST /api/scalping/sync                → resync position si état incohérent
+GET  /api/scalping/analytics?days=30   → win rate empirique par indicateur/heure/pilier
+GET  /api/scalping/reconcile-history?days=7 → comparaison historique local vs fills Binance
 ```
+
+### Analytics — `GET /api/scalping/analytics`
+Analyse empirique des trades fermés : win rate par bucket (ADX, RSI, CVD, heure UTC, piliers,
+TF alignment, volume, confidence). Permet de mesurer quelle variable prédit réellement l'outcome.
+Retourne aussi `waitBreakdown` : quelle gate bloque le plus de signaux WAIT.
+
+### Réconciliation — `GET /api/scalping/reconcile-history`
+Compare les trades locaux (DB) aux fills réels Binance sur N jours.
+Détecte : `MISSING_ENTRY_FILL`, `MISSING_EXIT_FILL`, `ENTRY_PRICE_MISMATCH`,
+`EXIT_PRICE_MISMATCH`, `PNL_MISMATCH`, `FEE_MISMATCH`, `ORPHAN_FILL`.
+Chaque anomalie indique son `origin` (LOCAL ou BINANCE) et sa `severity` (ERROR/WARNING).
+
+## Notifications Telegram
+
+### Configuration (application.properties)
+```
+market.telegram.bot-token=7123456789:AAFxxx...
+market.telegram.chat-id=123456789
+market.telegram.min-confidence=60
+```
+
+### Alertes sortantes (bot → utilisateur)
+| Événement | Méthode | Contenu |
+|-----------|---------|---------|
+| Trade ouvert | `sendScalpingAlert()` | Direction, prix entrée, TP1, TP2, SL, levier, mise |
+| TP1 partiel (60%) | `sendCloseAlert()` | Prix fill, PnL partiel |
+| TP2 / SL / réconciliation | `sendCloseAlert()` + `sendTradeSummary()` | Prix fill, PnL net + bilan global |
+
+`sendTradeSummary()` est `public` — appelable depuis `MarketScheduler` via `/bilan`.  
+`notifyIfNeeded()` existe toujours mais **n'est plus appelé** (supprimé de `CryptoAnalysisService`).
+
+### Commandes entrantes (utilisateur → bot)
+Le scheduler `processTelegramCommands()` poll `getUpdates` **toutes les 5 s**.  
+Seuls les messages venant du `chat_id` configuré sont traités (filtre sécurité).
+
+| Commande | Action |
+|----------|--------|
+| `/start` | Active l'auto-scalping |
+| `/stop` | Désactive l'auto-scalping |
+| `/status` ou `/s` | État position + wallet + cooldown |
+| `/bilan` | Résumé wins/losses/PnL + 5 derniers trades |
+| `/help` | Liste des commandes |
+
+Le suffixe `@BotName` (ajouté par Telegram dans les groupes) est strippé avant le dispatch.
 
 ## Commandes utiles
 ```bash
-mvn test -Dtest="ScalpingAnalysisServiceTest,BinanceScalpingTradeServiceTest,BinanceFuturesServiceTest"
+mvn test -Dtest="ScalpingAnalysisServiceTest,BinanceScalpingTradeServiceTest,BinanceFuturesServiceTest,TelegramAlertServiceTest"
 mvn test  # tous les tests
 mvn quarkus:dev  # dev mode
 ```

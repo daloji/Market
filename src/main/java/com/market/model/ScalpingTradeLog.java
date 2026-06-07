@@ -119,4 +119,13 @@ public class ScalpingTradeLog extends PanacheEntity {
     public static ScalpingTradeLog findByTradeId(long tradeId) {
         return find("tradeId", tradeId).firstResult();
     }
+
+    public static List<ScalpingTradeLog> findPlacedAfter(java.time.Instant since) {
+        return find("outcome = 'placed' AND tradeId IS NOT NULL AND loggedAt >= ?1 ORDER BY loggedAt DESC",
+            since).list();
+    }
+
+    public static List<ScalpingTradeLog> findWaitAfter(java.time.Instant since) {
+        return find("outcome IN ('wait', 'low_conf') AND loggedAt >= ?1", since).list();
+    }
 }

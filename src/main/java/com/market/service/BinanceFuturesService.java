@@ -318,6 +318,17 @@ public class BinanceFuturesService {
     }
 
     /**
+     * Returns user trades since startTime for history reconciliation (GET /fapi/v1/userTrades).
+     * @param symbol    e.g. "BTCUSDT"
+     * @param startTime epoch ms — start of the period to fetch
+     * @param limit     max number of fills (Binance max = 1000)
+     */
+    public String getUserTradesFrom(String symbol, long startTime, int limit) throws Exception {
+        String params = "symbol=" + symbol + "&startTime=" + startTime + "&limit=" + limit + tsSuffix();
+        return get("/fapi/v1/userTrades", params + "&signature=" + sign(params));
+    }
+
+    /**
      * Queries a specific order by orderId (GET /fapi/v1/order).
      * Used after a market entry to retrieve the actual avgPrice when the immediate
      * placeMarketOrder response returns avgPrice=0 (asynchronous fill).

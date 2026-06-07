@@ -167,6 +167,45 @@ public class ScalpingResource {
         }
     }
 
+    /**
+     * Analyse empirique des trades passés : win rate par indicateur, heure UTC, pilier, gate WAIT.
+     * Permet d'identifier quels indicateurs ont vraiment une valeur prédictive sur vos données.
+     *
+     * GET /api/scalping/analytics?days=30
+     *
+     * Retourne pour chaque dimension (ADX, RSI, CVD, heure, TF, piliers…) :
+     *   count, winRate (%), avgPnlNet ($), totalPnlNet ($)
+     * Plus un waitBreakdown — quelle gate bloque le plus de trades.
+     */
+    @GET @Path("/analytics")
+    public Response analytics(@QueryParam("days") @DefaultValue("30") int days) {
+        if (days < 1 || days > 365) {
+            return Response.status(400).entity(Map.of("error", "days doit être entre 1 et 365")).build();
+        }
+        BinanceScalpingTradeService.AnalyticsReport report = scalping.analyzeHistory(days);
+        return Response.ok(report).build();
+    }
+
+    /**
+     * Reconciles local closed trades against Binance fills.
+     * Detects: missing fills, price mismatches, PnL gaps, orphan Binance fills.
+     * Each discrepancy includes severity (ERROR|WARNING), type, and origin (LOCAL|BINANCE).
+     *
+     * GET /api/scalping/reconcile-history?days=7
+     */
+    @GET @Path("/reconcile-history")
+    public Response reconcileHistory(@QueryParam("days") @DefaultValue("7") int days) {
+        if (!futures.isConfigured()) {
+            return Response.status(400).entity(Map.of(
+                "error", "Binance API non configurée — impossible de réconcilier l'historique")).build();
+        }
+        if (days < 1 || days > 90) {
+            return Response.status(400).entity(Map.of("error", "days doit être entre 1 et 90")).build();
+        }
+        BinanceScalpingTradeService.HistoryReconcileReport report = scalping.reconcileTradeHistory(days);
+        return Response.ok(report).build();
+    }
+
     @POST @Path("/config")
     public Response config(ConfigRequest req) {
         if (req == null) return Response.status(400).entity(Map.of("error", "body required")).build();
